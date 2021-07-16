@@ -2,33 +2,32 @@ use std::path::PathBuf;
 
 use clap::AppSettings;
 use concordium_rust_sdk::endpoints;
-use crypto_common::{version::*,types::CredentialIndex, SerdeDeserialize, SerdeSerialize};
-use id::{types::*, id_prover::*, id_verifier::*, ffi::*};
+use crypto_common::{types::CredentialIndex, version::*, SerdeDeserialize, SerdeSerialize};
+use id::{ffi::*, id_prover::*, id_verifier::*, types::*};
 
 use pedersen_scheme::randomness::Randomness as PedersenRandomness;
 use structopt::StructOpt;
 
-use serde_json::to_writer_pretty;
+use bulletproofs::range_proof::RangeProof;
 use curve_arithmetic::*;
 use pairing::bls12_381::Bls12;
-use bulletproofs::range_proof::RangeProof;
+use rand::*;
+use serde::de::DeserializeOwned;
+use serde_json::to_writer_pretty;
 use std::{
+    default::Default,
     fmt::Debug,
     fs::File,
     io::{self, BufReader},
-    path::Path,
     marker::PhantomData,
-    default::Default
+    path::Path,
 };
-use serde::de::DeserializeOwned;
-use rand::*;
 
 use dialoguer::Input;
 
 pub type ExampleCurve = <Bls12 as Pairing>::G1;
 
 pub type ExampleAttribute = AttributeKind;
-
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
 #[serde(bound(
@@ -39,17 +38,17 @@ pub enum Claim<C: Curve, AttributeType: Attribute<C::Scalar>> {
     AttributeOpening {
         attribute_tag: AttributeTag,
         attribute: AttributeType,
-        proof: PedersenRandomness<C>
+        proof: PedersenRandomness<C>,
     },
     AttributeInRange {
         attribute_tag: AttributeTag,
         lower: AttributeType,
         upper: AttributeType,
-        proof: RangeProof<C>
+        proof: RangeProof<C>,
     },
     AccountOwnership {
-        phantom_data: PhantomData<(C, AttributeType)>
-    }
+        phantom_data: PhantomData<(C, AttributeType)>,
+    },
 }
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
@@ -58,9 +57,9 @@ pub enum Claim<C: Curve, AttributeType: Attribute<C::Scalar>> {
     deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
 ))]
 struct ClaimAboutAccount<C: Curve, AttributeType: Attribute<C::Scalar>> {
-    account:     AccountAddress,
+    account: AccountAddress,
     credential_index: CredentialIndex,
-    claim: Claim<C, AttributeType>
+    claim: Claim<C, AttributeType>,
 }
 
 fn write_json_to_file<P: AsRef<Path>, T: SerdeSerialize>(filepath: P, v: &T) -> io::Result<()> {
@@ -70,7 +69,8 @@ fn write_json_to_file<P: AsRef<Path>, T: SerdeSerialize>(filepath: P, v: &T) -> 
 fn read_json_from_file<P, T>(path: P) -> io::Result<T>
 where
     P: AsRef<Path> + Debug,
-    T: DeserializeOwned, {
+    T: DeserializeOwned,
+{
     let file = File::open(path)?;
 
     let reader = BufReader::new(file);
@@ -78,9 +78,7 @@ where
     Ok(u)
 }
 
-fn read_global_context<P: AsRef<Path> + Debug>(
-    filename: P,
-) -> Option<GlobalContext<ExampleCurve>> {
+fn read_global_context<P: AsRef<Path> + Debug>(filename: P) -> Option<GlobalContext<ExampleCurve>> {
     let params: Versioned<serde_json::Value> = read_json_from_file(filename).ok()?;
     match params.version {
         Version { value: 0 } => serde_json::from_value(params.value).ok(),
@@ -90,15 +88,9 @@ fn read_global_context<P: AsRef<Path> + Debug>(
 
 #[derive(StructOpt)]
 enum IdClient {
-    #[structopt(
-        name = "prove-ownership",
-        about = "Prove ownership of an account."
-    )]
+    #[structopt(name = "prove-ownership", about = "Prove ownership of an account.")]
     ProveOwnership(ProveOwnership),
-    #[structopt(
-        name = "verify-claim",
-        about = "Verify a claim given a proof."
-    )]
+    #[structopt(name = "verify-claim", about = "Verify a claim given a proof.")]
     VerifyClaim(Box<VerifyClaim>),
     #[structopt(
         name = "prove-attribute-in-range",
@@ -117,7 +109,6 @@ enum IdClient {
     ClaimAccountOwnership(ClaimAccountOwnership),
 }
 
-
 #[derive(StructOpt)]
 struct ProveOwnership {
     #[structopt(
@@ -125,30 +116,18 @@ struct ProveOwnership {
         help = "File containing private credential keys."
     )]
     private_keys: PathBuf,
-    #[structopt(
-        long = "account",
-        help = "Account address-"
-    )]
+    #[structopt(long = "account", help = "Account address-")]
     account: AccountAddress,
-    #[structopt(
-        long = "challenge",
-        help = "File containing verifier's challenge."
-    )]
+    #[structopt(long = "challenge", help = "File containing verifier's challenge.")]
     challenge: PathBuf,
-    #[structopt(
-        long = "out",
-        help = "Path to output the proof to."
-    )]
+    #[structopt(long = "out", help = "Path to output the proof to.")]
     out: PathBuf,
 }
 
 #[derive(StructOpt)]
 struct ProveAttributeInRange {
-    #[structopt(
-        long = "account",
-        help = "The prover's account address."
-    )]
-    account:     AccountAddress,
+    #[structopt(long = "account", help = "The prover's account address.")]
+    account: AccountAddress,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account."
@@ -179,25 +158,16 @@ struct ProveAttributeInRange {
         help = "Path to file containing randomness used to produce to commitment."
     )]
     randomness: PathBuf,
-    #[structopt(
-        long = "global",
-        help = "Path to file with global context."
-    )]
+    #[structopt(long = "global", help = "Path to file with global context.")]
     global: PathBuf,
-    #[structopt(
-        long = "proof-out",
-        help = "Path to output proof to."
-    )]
-    out: PathBuf
+    #[structopt(long = "proof-out", help = "Path to output proof to.")]
+    out: PathBuf,
 }
 
 #[derive(StructOpt)]
 struct RevealAttribute {
-    #[structopt(
-        long = "account",
-        help = "The prover's account address."
-    )]
-    account:     AccountAddress,
+    #[structopt(long = "account", help = "The prover's account address.")]
+    account: AccountAddress,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account."
@@ -218,40 +188,28 @@ struct RevealAttribute {
         help = "Path to file containing randomness used to produce to commitment."
     )]
     randomness: PathBuf,
-    #[structopt(
-        long = "proof-out",
-        help = "Path to output proof to."
-    )]
-    out: PathBuf
+    #[structopt(long = "proof-out", help = "Path to output proof to.")]
+    out: PathBuf,
 }
 
 #[derive(StructOpt)]
 struct ClaimAccountOwnership {
-    #[structopt(
-        long = "account",
-        help = "The prover's account address."
-    )]
-    account:     AccountAddress,
+    #[structopt(long = "account", help = "The prover's account address.")]
+    account: AccountAddress,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account."
     )]
     credential_index: CredentialIndex,
-    #[structopt(
-        long = "claim-out",
-        help = "Path to output claim to."
-    )]
-    out: PathBuf
+    #[structopt(long = "claim-out", help = "Path to output claim to.")]
+    out: PathBuf,
 }
 
 #[derive(StructOpt)]
 struct VerifyClaim {
     #[structopt(long = "grpc")]
-    endpoint:    tonic::transport::Endpoint,
-    #[structopt(
-        long = "claim",
-        help = "The path to a file containing a claim."
-    )]
+    endpoint: tonic::transport::Endpoint,
+    #[structopt(long = "claim", help = "The path to a file containing a claim.")]
     claim: PathBuf,
 }
 
@@ -263,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
     let matches = app.get_matches();
     let client = IdClient::from_clap(&matches);
     use IdClient::*;
-    match client{
+    match client {
         ProveOwnership(po) => handle_prove_ownership(po),
         VerifyClaim(vc) => handle_verify_claim(*vc).await?,
         ProveAttributeInRange(pair) => handle_prove_attribute_in_range(pair),
@@ -273,54 +231,89 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-
-async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()>{
-    
-    let claim_about_account : ClaimAboutAccount<ExampleCurve, ExampleAttribute> = read_json_from_file(vc.claim)?;
+async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
+    let claim_about_account: ClaimAboutAccount<ExampleCurve, ExampleAttribute> =
+        read_json_from_file(vc.claim)?;
     let mut client = endpoints::Client::connect(vc.endpoint, "rpcadmin".to_string()).await?;
     let consensus_info = client.get_consensus_status().await?;
-    let global_context = client.get_cryptographic_parameters(&consensus_info.last_finalized_block).await?;
-    let acc_info = client.get_account_info(&claim_about_account.account, &consensus_info.last_finalized_block).await?;
-    let credential = acc_info.account_credentials.get(&claim_about_account.credential_index).expect("No credential on account with given index");
+    let global_context = client
+        .get_cryptographic_parameters(&consensus_info.last_finalized_block)
+        .await?;
+    let acc_info = client
+        .get_account_info(
+            &claim_about_account.account,
+            &consensus_info.last_finalized_block,
+        )
+        .await?;
+    let credential = acc_info
+        .account_credentials
+        .get(&claim_about_account.credential_index)
+        .expect("No credential on account with given index");
     use AccountCredentialWithoutProofs::*;
-    let (maybe_commitments, public_keys) = 
-        match &credential.value {
-            Initial{icdv, ..} => (None,&icdv.cred_account), // This should never happen
-            Normal{commitments, cdv} => (Some(commitments), &cdv.cred_key_info)
-        };
+    let (maybe_commitments, public_keys) = match &credential.value {
+        Initial { icdv, .. } => (None, &icdv.cred_account), // This should never happen
+        Normal { commitments, cdv } => (Some(commitments), &cdv.cred_key_info),
+    };
     match claim_about_account.claim {
-        Claim::AttributeOpening{attribute_tag, attribute, proof} => {
+        Claim::AttributeOpening {
+            attribute_tag,
+            attribute,
+            proof,
+        } => {
             let maybe_commitment = match maybe_commitments {
                 Some(commitments) => commitments.cmm_attributes.get(&attribute_tag),
-                _ => None
+                _ => None,
             };
             if let Some(commitment) = maybe_commitment {
-              let b = verify_attribute(&global_context.on_chain_commitment_key, &attribute, &proof, &commitment);
-              println!("Result: {}", b);
-            } else {
-                println!("No commitment to attribute {} on given account.", attribute_tag);
-            }
-        }
-        Claim::AttributeInRange{attribute_tag, lower, upper, proof} => {
-            let maybe_commitment = match maybe_commitments {
-                Some(commitments) => commitments.cmm_attributes.get(&attribute_tag),
-                _ => None
-            };
-            if let Some(commitment) = maybe_commitment {
-                let b = verify_attribute_range(&global_context.on_chain_commitment_key, &global_context.bulletproof_generators(), &lower, &upper, &commitment, &proof);
+                let b = verify_attribute(
+                    &global_context.on_chain_commitment_key,
+                    &attribute,
+                    &proof,
+                    &commitment,
+                );
                 println!("Result: {}", b);
             } else {
-                println!("No commitment to attribute {} on given account.", attribute_tag);
+                println!(
+                    "No commitment to attribute {} on given account.",
+                    attribute_tag
+                );
             }
-        },
-        Claim::AccountOwnership{..} => {
-            let mut challenge = [0u8; 32]; 
+        }
+        Claim::AttributeInRange {
+            attribute_tag,
+            lower,
+            upper,
+            proof,
+        } => {
+            let maybe_commitment = match maybe_commitments {
+                Some(commitments) => commitments.cmm_attributes.get(&attribute_tag),
+                _ => None,
+            };
+            if let Some(commitment) = maybe_commitment {
+                let b = verify_attribute_range(
+                    &global_context.on_chain_commitment_key,
+                    &global_context.bulletproof_generators(),
+                    &lower,
+                    &upper,
+                    &commitment,
+                    &proof,
+                );
+                println!("Result: {}", b);
+            } else {
+                println!(
+                    "No commitment to attribute {} on given account.",
+                    attribute_tag
+                );
+            }
+        }
+        Claim::AccountOwnership { .. } => {
+            let mut challenge = [0u8; 32];
             rand::thread_rng().fill(&mut challenge[..]);
             let challenge_path = "ownership-challenge.json";
             write_json_to_file(&challenge_path, &challenge)?;
             println!("Wrote challenge to file. Give challenge to prover.");
-            
-            let path_to_proof : Option<PathBuf> = {
+
+            let path_to_proof: Option<PathBuf> = {
                 let validator = |candidate: &String| -> Result<(), String> {
                     if std::path::Path::new(candidate).exists() {
                         Ok(())
@@ -338,15 +331,23 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()>{
                 input.validate_with(validator);
                 match input.interact() {
                     Ok(x) => Some(PathBuf::from(x)),
-                    Err(e) => {eprintln!("{}", e); None},
+                    Err(e) => {
+                        eprintln!("{}", e);
+                        None
+                    }
                 }
-            }; 
+            };
             if let Some(path) = path_to_proof {
-                let proof : AccountOwnershipProof = read_json_from_file(path)?;
-                let b = verify_account_ownership(&public_keys, claim_about_account.account, &challenge, &proof);
+                let proof: AccountOwnershipProof = read_json_from_file(path)?;
+                let b = verify_account_ownership(
+                    &public_keys,
+                    claim_about_account.account,
+                    &challenge,
+                    &proof,
+                );
                 println!("Result: {}", b);
             } else {
-              println!("Path to proof not found.");
+                println!("Path to proof not found.");
             }
         }
     };
@@ -354,8 +355,8 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()>{
     Ok(())
 }
 
-fn handle_prove_attribute_in_range(pair: ProveAttributeInRange){
-    let randomness : PedersenRandomness<ExampleCurve> = match read_json_from_file(pair.randomness) {
+fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) {
+    let randomness: PedersenRandomness<ExampleCurve> = match read_json_from_file(pair.randomness) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Could not parse randomness: {}. Terminating.", e);
@@ -371,17 +372,24 @@ fn handle_prove_attribute_in_range(pair: ProveAttributeInRange){
             return;
         }
     };
-    let proof = prove_attribute_in_range(&global_ctx.bulletproof_generators(), &global_ctx.on_chain_commitment_key, &pair.attribute, &pair.lower, &pair.upper, &randomness);
-    if let Some(proof) = proof {   
-        let claim = ClaimAboutAccount{
+    let proof = prove_attribute_in_range(
+        &global_ctx.bulletproof_generators(),
+        &global_ctx.on_chain_commitment_key,
+        &pair.attribute,
+        &pair.lower,
+        &pair.upper,
+        &randomness,
+    );
+    if let Some(proof) = proof {
+        let claim = ClaimAboutAccount {
             account: pair.account,
             credential_index: pair.credential_index,
             claim: Claim::AttributeInRange {
                 attribute_tag: pair.attribute_tag,
                 lower: pair.lower,
                 upper: pair.upper,
-                proof
-            }
+                proof,
+            },
         };
         if let Err(e) = write_json_to_file(&pair.out, &claim) {
             eprintln!("Could not output claim with proof: {}", e);
@@ -390,8 +398,8 @@ fn handle_prove_attribute_in_range(pair: ProveAttributeInRange){
     }
 }
 
-fn handle_reveal_attribute(ra: RevealAttribute){
-    let randomness : PedersenRandomness<ExampleCurve> = match read_json_from_file(ra.randomness) {
+fn handle_reveal_attribute(ra: RevealAttribute) {
+    let randomness: PedersenRandomness<ExampleCurve> = match read_json_from_file(ra.randomness) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("Could not parse randomness: {}. Terminating.", e);
@@ -399,14 +407,14 @@ fn handle_reveal_attribute(ra: RevealAttribute){
         }
     };
     let proof = randomness;
-    let claim = ClaimAboutAccount{
+    let claim = ClaimAboutAccount {
         account: ra.account,
         credential_index: ra.credential_index,
         claim: Claim::AttributeOpening {
             attribute_tag: ra.attribute_tag,
             attribute: ra.attribute,
-            proof
-        }
+            proof,
+        },
     };
     if let Err(e) = write_json_to_file(&ra.out, &claim) {
         eprintln!("Could not output claim with proof: {}", e);
@@ -414,13 +422,13 @@ fn handle_reveal_attribute(ra: RevealAttribute){
     }
 }
 
-fn handle_claim_ownership(cao: ClaimAccountOwnership){
-    let claim = ClaimAboutAccount{
+fn handle_claim_ownership(cao: ClaimAccountOwnership) {
+    let claim = ClaimAboutAccount {
         account: cao.account,
         credential_index: cao.credential_index,
         claim: Claim::<ExampleCurve, ExampleAttribute>::AccountOwnership {
-            phantom_data: Default::default()
-        }
+            phantom_data: Default::default(),
+        },
     };
     if let Err(e) = write_json_to_file(&cao.out, &claim) {
         eprintln!("Could not output claim with proof: {}", e);
@@ -428,22 +436,22 @@ fn handle_claim_ownership(cao: ClaimAccountOwnership){
     }
 }
 
-fn handle_prove_ownership(po: ProveOwnership){
-    let cred_data : CredentialData = match read_json_from_file(po.private_keys) {
+fn handle_prove_ownership(po: ProveOwnership) {
+    let cred_data: CredentialData = match read_json_from_file(po.private_keys) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Could not parse credential data: {}. Terminating.", e);
             return;
         }
     };
-    let challenge : [u8; 32] = match read_json_from_file(po.challenge) {
+    let challenge: [u8; 32] = match read_json_from_file(po.challenge) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Could not parse challenge: {}. Terminating.", e);
             return;
         }
     };
-    
+
     let proof = prove_ownership_of_account(cred_data, po.account, &challenge);
 
     if let Err(e) = write_json_to_file(&po.out, &proof) {
