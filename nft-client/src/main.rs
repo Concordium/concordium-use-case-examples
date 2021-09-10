@@ -1,3 +1,17 @@
+//! This is an example of an off-chain application which integrates with a smart
+//! contract on chain. The application is a client for working with a specific
+//! implementation of a Non-fungible token(NFT) smart contract.
+//! The smart contract should follow the CTS1 specification, but some additional
+//! assumptions are made for how the contract serializes the state and the
+//! existence of a "mint" contract function.
+//!
+//! The smart contract is called "CTS1-NFT" and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
+//!
+//! Most of the functionality needs access to the GRPC API of a running
+//! concordium-node. Some functionality of the client additionally depends on
+//! the concordium-node to have the transaction logging enabled and access to
+//! the PostgreSQL database with transaction logs.
+
 use anyhow::*;
 use clap::AppSettings;
 use concordium_rust_sdk::{
@@ -25,7 +39,7 @@ use concordium_contracts_common::Deserial;
 
 /// Name of the NFT smart contract from the example implementing the CTS1
 /// specification.
-const NFT_CONTRACT_NAME: &'static str = "CTS1-NFT";
+const NFT_CONTRACT_NAME: &str = "CTS1-NFT";
 
 /// The NFT contract state for each address.
 /// Important: this structure is matching the NFT contract implementations and
@@ -115,7 +129,7 @@ impl FromStr for ContractAddressWrapper {
         let trimmed = &s[1..s.len() - 1];
         let (index, sub_index) = trimmed
             .split_once(",")
-            .ok_or_else(|| ParseContractAddressError::NoCommaError)?;
+            .ok_or(ParseContractAddressError::NoCommaError)?;
         let index = u64::from_str(index)?;
         let sub_index = u64::from_str(sub_index)?;
         Ok(ContractAddressWrapper(types::ContractAddress::new(
@@ -204,37 +218,43 @@ struct App {
         default_value = "http://localhost:10001"
     )]
     endpoint: Endpoint,
-    #[structopt(long = "contract", help = "NFT contract address")]
-    contract: ContractAddressWrapper,
     #[structopt(subcommand)]
     command:  Command,
 }
 
 #[derive(Debug, StructOpt)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     #[structopt(
         name = "show",
         help = "Prints all addresses owning tokens and a list of the token IDs they currently own."
     )]
-    PrintState,
+    PrintState {
+        #[structopt(long = "contract", help = "NFT contract address")]
+        contract: ContractAddressWrapper,
+    },
     #[structopt(
         name = "trace-events",
         help = "Follow and print events for the contract."
     )]
     Trace {
+        #[structopt(long = "contract", help = "NFT contract address")]
+        contract: ContractAddressWrapper,
         #[structopt(
             long = "db",
             default_value = "host=localhost dbname=nft_client_logging user=nft-client \
                              password=arstneio port=5432",
             help = "Database connection string."
         )]
-        config: postgres::Config,
+        config:   postgres::Config,
     },
     #[structopt(
         name = "mint",
         help = "Send mint transaction to NFT contract, with the given token IDs."
     )]
     Mint {
+        #[structopt(long = "contract", help = "NFT contract address")]
+        contract:  ContractAddressWrapper,
         #[structopt(
             name = "sender",
             long = "sender",
@@ -246,6 +266,8 @@ enum Command {
     },
     #[structopt(name = "transfer", help = "Transfer one NFT to another address.")]
     Transfer {
+        #[structopt(long = "contract", help = "NFT contract address")]
+        contract:     ContractAddressWrapper,
         #[structopt(
             name = "sender",
             long = "sender",
@@ -299,7 +321,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     match app.command {
-        Command::PrintState => {
+        Command::PrintState { contract } => {
             // The GRPC client for Concordium node.
             let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
                 .await
@@ -307,14 +329,14 @@ async fn main() -> anyhow::Result<()> {
 
             let consensus_status = grpc_client.get_consensus_status().await?;
             let instance_info = grpc_client
-                .get_instance_info(app.contract.0, &consensus_status.best_block)
+                .get_instance_info(contract.0, &consensus_status.best_block)
                 .await?;
             let mut cursor = concordium_contracts_common::Cursor::new(instance_info.model);
             let state = NFTContractState::deserial(&mut cursor)
                 .map_err(|_| anyhow!("Failed parsing contract state"))?;
             pretty_print_contract_state(&state);
         }
-        Command::Trace { config } => {
+        Command::Trace { contract, config } => {
             println!("Connecting to PostgreSQL");
             let (db_client, mut connection) = config.connect(postgres::NoTls).await?;
 
@@ -349,7 +371,7 @@ async fn main() -> anyhow::Result<()> {
                             END IF;
                             RETURN NEW;
                         END;$psql$ LANGUAGE plpgsql",
-                        app.contract.0.index.index, app.contract.0.subindex.sub_index
+                        contract.0.index.index, contract.0.subindex.sub_index
                     )
                     .as_str(),
                     &[],
@@ -380,7 +402,7 @@ async fn main() -> anyhow::Result<()> {
                     ])
                     .await?;
                 let summary = serde_json::from_value::<DatabaseSummaryEntry>(row.get(0))?;
-                let events = collect_summary_contract_events(summary, app.contract.0);
+                let events = collect_summary_contract_events(summary, contract.0);
                 for event in events {
                     let mut cursor = concordium_contracts_common::Cursor::new(event.as_ref());
                     let event = cts1::Event::deserial(&mut cursor)
@@ -389,7 +411,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Mint { sender, token_ids } => {
+        Command::Mint {
+            sender,
+            token_ids,
+            contract,
+        } => {
             // The GRPC client for Concordium node.
             let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
                 .await
@@ -409,7 +435,7 @@ async fn main() -> anyhow::Result<()> {
 
             let transaction_payload = transactions::Payload::Update {
                 amount:       common::types::Amount::from(0),
-                address:      app.contract.0,
+                address:      contract.0,
                 receive_name: smart_contracts::ReceiveName::try_from(format!(
                     "{}.mint",
                     NFT_CONTRACT_NAME
@@ -433,6 +459,7 @@ async fn main() -> anyhow::Result<()> {
             to,
             to_func,
             to_func_data,
+            contract,
         } => {
             // The GRPC client for Concordium node.
             let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
@@ -461,7 +488,7 @@ async fn main() -> anyhow::Result<()> {
 
             let transaction_payload = transactions::Payload::Update {
                 amount:       common::types::Amount::from(0),
-                address:      app.contract.0,
+                address:      contract.0,
                 receive_name: smart_contracts::ReceiveName::try_from(format!(
                     "{}.transfer",
                     NFT_CONTRACT_NAME
