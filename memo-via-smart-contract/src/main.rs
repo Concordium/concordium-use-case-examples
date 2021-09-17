@@ -133,11 +133,15 @@ async fn main() -> anyhow::Result<()> {
                 (chrono::Utc::now().timestamp() + 300) as u64,
             );
             let payload = transactions::Payload::Update {
-                amount,
-                address,
-                receive_name: smart_contracts::ReceiveName::try_from("memo.receive".to_string())
+                payload: transactions::UpdateContractPayload {
+                    amount,
+                    address,
+                    receive_name: smart_contracts::ReceiveName::try_from(
+                        "memo.receive".to_string(),
+                    )
                     .unwrap(),
-                message,
+                    message,
+                },
             };
             let energy = transactions::send::GivenEnergy::Add(700.into());
             let tx = transactions::send::make_and_sign_transaction(
@@ -207,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
 
     // The postgres database client Arc. The client is not cloneable, by design,
     // so we put it behind an Arc.
-    let db = Arc::new(postgres::create_client(app.config, postgres::NoTls).await?);
+    let db = Arc::new(postgres::DatabaseClient::create(app.config, postgres::NoTls).await?);
 
     // Endpoint to show transactions affecting the given smart contract.
     let contract_shower = warp::path("observe").and(
@@ -254,28 +258,32 @@ async fn list_transactions(
             query.filter_map(|row| async move {
                 match row.summary {
                     postgres::DatabaseSummaryEntry::BlockItem(types::BlockItemSummary {
-                        sender: Some(sender),
-                        summary_type:
-                            types::BlockItemType::AccountTransaction(Some(
-                                types::TransactionType::Update,
-                            )),
-                        result: types::BlockItemResult::Success { events },
-                        ..
+                        index: _,
+                        energy_cost: _,
+                        hash,
+                        details:
+                            types::BlockItemSummaryDetails::AccountTransaction(
+                                types::AccountTransactionDetails {
+                                    cost: _,
+                                    sender,
+                                    effects:
+                                        types::AccountTransactionEffects::ContractUpdateIssued {
+                                            effects,
+                                        },
+                                },
+                            ),
                     }) => {
-                        let events = events
+                        let events = effects
                             .into_iter()
                             .filter_map(|event| match event {
-                                types::Event::Updated {
-                                    amount,
-                                    message,
-                                    receive_name,
-                                    ..
-                                } => {
-                                    if <&str as From<_>>::from(&receive_name) == "memo.receive" {
+                                types::ContractTraceElement::Updated { data } => {
+                                    if <&str as From<_>>::from(&data.receive_name) == "memo.receive"
+                                    {
                                         Some(serde_json::json!({
                                             "sender": sender,
-                                            "memo": message,
-                                            "amount": amount
+                                            "memo": data.message,
+                                            "amount": data.amount,
+                                            "transactionHash": hash
                                         }))
                                     } else {
                                         None

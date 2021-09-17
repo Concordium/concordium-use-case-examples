@@ -339,8 +339,12 @@ dependencies = [
 name = "concordium-contracts-common"
 version = "0.4.1"
 dependencies = [
+ "base58check",
+ "chrono",
  "fnv",
  "hashbrown",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -361,6 +365,7 @@ dependencies = [
  "futures",
  "hex",
  "id",
+ "pedersen_scheme",
  "prost",
  "rust_decimal",
  "semver 1.0.3",
@@ -1115,6 +1120,7 @@ dependencies = [
  "serde_json",
  "sha2 0.9.5",
  "sha3",
+ "thiserror",
  "wasm-bindgen",
 ]
 
