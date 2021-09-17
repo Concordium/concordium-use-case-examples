@@ -433,7 +433,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let bytes = concordium_contracts_common::to_bytes(&mint_parameter);
 
-            let transaction_payload = transactions::Payload::Update {
+            let update_payload = transactions::UpdateContractPayload {
                 amount:       common::types::Amount::from(0),
                 address:      contract.0,
                 receive_name: smart_contracts::ReceiveName::try_from(format!(
@@ -442,6 +442,10 @@ async fn main() -> anyhow::Result<()> {
                 ))
                 .map_err(|e| anyhow!("Failed to parse receive name {}", e))?,
                 message:      smart_contracts::Parameter::from(bytes),
+            };
+
+            let transaction_payload = transactions::Payload::Update {
+                payload: update_payload
             };
             print!("Minting tokens with id: ");
             for token_id in token_ids {
@@ -486,7 +490,7 @@ async fn main() -> anyhow::Result<()> {
             let parameter = cts1::TransferParams(transfers);
             let bytes = concordium_contracts_common::to_bytes(&parameter);
 
-            let transaction_payload = transactions::Payload::Update {
+            let payload = transactions::UpdateContractPayload {
                 amount:       common::types::Amount::from(0),
                 address:      contract.0,
                 receive_name: smart_contracts::ReceiveName::try_from(format!(
@@ -495,6 +499,10 @@ async fn main() -> anyhow::Result<()> {
                 ))
                 .map_err(|e| anyhow!("Failed to parse receive name {}", e))?,
                 message:      smart_contracts::Parameter::from(bytes),
+            };
+
+            let transaction_payload = transactions::Payload::Update {
+                payload
             };
             println!(
                 "Transferring tokens {:?} from {} to {:?}",

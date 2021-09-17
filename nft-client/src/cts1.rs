@@ -140,8 +140,8 @@ impl Serial for Transfer {
                 .as_ref()
                 .ok_or_else(W::Err::default)?
                 .serial(out)?;
-            self.data.serial(out)?;
         }
+        self.data.serial(out)?;
         Ok(())
     }
 }
