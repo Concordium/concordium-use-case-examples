@@ -445,7 +445,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let transaction_payload = transactions::Payload::Update {
-                payload: update_payload
+                payload: update_payload,
             };
             print!("Minting tokens with id: ");
             for token_id in token_ids {
@@ -501,9 +501,7 @@ async fn main() -> anyhow::Result<()> {
                 message:      smart_contracts::Parameter::from(bytes),
             };
 
-            let transaction_payload = transactions::Payload::Update {
-                payload
-            };
+            let transaction_payload = transactions::Payload::Update { payload };
             println!(
                 "Transferring tokens {:?} from {} to {:?}",
                 token_ids, from, to
