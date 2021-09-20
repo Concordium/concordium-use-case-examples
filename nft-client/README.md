@@ -6,7 +6,7 @@ The smart contract should follow the CTS1 specification, but some additional ass
 The smart contract is called "CTS1-NFT" and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
 
 Most of the functionality needs access to the GRPC API of a running concordium-node.
-Some functionality of the client additionally depends on the concordium-node to have the transaction logging enabled and access to
+Some functionality of the client additionally depends on the concordium-node to have the [transaction logging enabled](https://github.com/Concordium/concordium-node/blob/main/docs/transaction-logging.md) and access to
 the PostgreSQL database with transaction logs.
 
 Run the following for a description of the functionality:
@@ -24,7 +24,7 @@ The NFT-client supports the following commands:
 Call the smart contract function for minting a number of NFTs with provided token IDs.
 This command will result in a transaction on the blockchain and requires account keys, see section for setting up account keys.
 
-Notice only the smart contract will only allow the contract owner to call the mint function.
+Notice the smart contract will only allow the contract owner to call the mint function.
 
 #### Example:
 
@@ -50,6 +50,7 @@ nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1
 ### Show current state of the NFT contract
 
 Fetches the current state of the smart contract and displays the current NFT owners and the token IDs they own and enabled operators.
+Since CTS1 does not specify how to serialize the contract state, this will only work for smart contracts using the exact same serialization as the "CTS1-NFT" example.
 
 
 To show the current state of the smart contract run:

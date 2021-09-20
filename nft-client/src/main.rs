@@ -14,6 +14,7 @@
 
 use anyhow::*;
 use clap::AppSettings;
+use common::{SerdeDeserialize, SerdeSerialize};
 use concordium_rust_sdk::{
     common, constants,
     endpoints::{Client, Endpoint},
@@ -22,11 +23,10 @@ use concordium_rust_sdk::{
     types,
 };
 use futures::{StreamExt, TryStreamExt};
-use serde::*;
 use smart_contracts::concordium_contracts_common;
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
-    convert::TryFrom,
+    convert::{TryFrom, TryInto},
     fmt::Display,
     path::PathBuf,
     str::FromStr,
@@ -34,6 +34,7 @@ use std::{
 use structopt::*;
 use thiserror::*;
 use types::{smart_contracts, transactions};
+
 mod cts1;
 use concordium_contracts_common::Deserial;
 
@@ -42,7 +43,7 @@ use concordium_contracts_common::Deserial;
 const NFT_CONTRACT_NAME: &str = "CTS1-NFT";
 
 /// The NFT contract state for each address.
-/// Important: this structure is matching the NFT contract implementations and
+/// Important: this structure matches the NFT contract implementations and
 /// cannot be assumed for any CTS1 contract state, as the CTS1 does not restrict
 /// the state in anyway.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -54,7 +55,7 @@ struct NFTContractAddressState {
 }
 
 /// Deserialization of AddressState.
-/// Important: this deserialization is matching the NFT contract implementations
+/// Important: this deserialization matches the NFT contract implementations
 /// and cannot be assumed for any CTS1 contract state is serialized, as the CTS1
 /// does not restrict how to encode the state in anyway.
 impl Deserial for NFTContractAddressState {
@@ -62,17 +63,13 @@ impl Deserial for NFTContractAddressState {
         source: &mut R,
     ) -> Result<Self, concordium_contracts_common::ParseError> {
         let owned_tokens_length = u16::deserial(source)?;
-        let mut owned_tokens = Set::default();
-        for _ in 0..owned_tokens_length {
-            let k = cts1::TokenIdVec::deserial(source)?;
-            owned_tokens.insert(k);
-        }
+        let owned_tokens = concordium_contracts_common::deserial_set_no_length_no_order_check(
+            source,
+            owned_tokens_length.into(),
+        )?;
         let operators_length = u8::deserial(source)?;
-        let mut operators = Set::default();
-        for _ in 0..operators_length {
-            let k = concordium_contracts_common::Address::deserial(source)?;
-            operators.insert(k);
-        }
+        let operators =
+            concordium_contracts_common::deserial_set_no_length(source, operators_length.into())?;
         Ok(NFTContractAddressState {
             owned_tokens,
             operators,
@@ -81,14 +78,16 @@ impl Deserial for NFTContractAddressState {
 }
 
 /// The NFT contract state.
-/// Important: this structure is matching the NFT contract implementations and
+/// Important: this structure matches the NFT contract implementations and
 /// cannot be assumed for any CTS1 contract state, as the CTS1 does not restrict
 /// the state in anyway.
 #[derive(Debug)]
-struct NFTContractState(Map<concordium_contracts_common::Address, NFTContractAddressState>);
+struct NFTContractState {
+    state: Map<concordium_contracts_common::Address, NFTContractAddressState>,
+}
 
 /// Deserialization of the NFT contract state.
-/// Important: this deserialization is matching the NFT contract implementations
+/// Important: this deserialization matches the NFT contract implementations
 /// and cannot be assumed for any CTS1 contract state is serialized, as the CTS1
 /// does not restrict how to encode the state in anyway.
 impl concordium_contracts_common::Deserial for NFTContractState {
@@ -96,13 +95,9 @@ impl concordium_contracts_common::Deserial for NFTContractState {
         source: &mut R,
     ) -> Result<Self, concordium_contracts_common::ParseError> {
         let length = u32::deserial(source)?;
-        let mut state = Map::default();
-        for _ in 0..length {
-            let k = concordium_contracts_common::Address::deserial(source)?;
-            let v = NFTContractAddressState::deserial(source)?;
-            state.insert(k, v);
-        }
-        Ok(NFTContractState(state))
+        let state =
+            concordium_contracts_common::deserial_map_no_length(source, length.try_into()?)?;
+        Ok(NFTContractState { state })
     }
 }
 
@@ -195,13 +190,17 @@ impl Display for AddressWrapper {
 }
 
 /// Helper to parse account keys JSON format.
-#[derive(Serialize, Deserialize)]
+#[derive(SerdeSerialize, SerdeDeserialize)]
 #[serde(rename_all = "camelCase")]
 struct AccountData {
     /// The keys for the account address.
     account_keys: id::types::AccountKeys,
     /// The account address.
     address:      id::types::AccountAddress,
+}
+
+fn box_postgres_from_str(s: &str) -> Result<Box<postgres::Config>, tokio_postgres::Error> {
+    Ok(Box::new(s.parse()?))
 }
 
 /// Structure to hold command-line arguments.
@@ -223,7 +222,6 @@ struct App {
 }
 
 #[derive(Debug, StructOpt)]
-#[allow(clippy::large_enum_variant)]
 enum Command {
     #[structopt(
         name = "show",
@@ -244,9 +242,10 @@ enum Command {
             long = "db",
             default_value = "host=localhost dbname=nft_client_logging user=nft-client \
                              password=arstneio port=5432",
-            help = "Database connection string."
+            help = "Database connection string.",
+            parse(try_from_str = box_postgres_from_str)
         )]
-        config:   postgres::Config,
+        config:   Box<postgres::Config>,
     },
     #[structopt(
         name = "mint",
@@ -283,13 +282,19 @@ enum Command {
         #[structopt(
             name = "from",
             long = "from",
-            help = "The current owner of the token being transferred."
+            help = "The current owner of the token being transferred.
+                    This is either an account address or a contract address. Note that contract \
+                    addresses are written using the notation <index, subindex> where the index \
+                    and subindex are replaced with integers."
         )]
         from:         AddressWrapper,
         #[structopt(
             name = "to",
             long = "to",
-            help = "The address to receive the token being transferred."
+            help = "The address to receive the token being transferred.
+                    This is either an account address or a contract address. Note that contract \
+                    addresses are written using the notation <index, subindex> where the index \
+                    and subindex are replaced with integers."
         )]
         to:           AddressWrapper,
         #[structopt(
@@ -337,7 +342,7 @@ async fn main() -> anyhow::Result<()> {
             pretty_print_contract_state(&state);
         }
         Command::Trace { contract, config } => {
-            println!("Connecting to PostgreSQL");
+            eprintln!("Connecting to PostgreSQL");
             let (db_client, mut connection) = config.connect(postgres::NoTls).await?;
 
             // Poll PostgreSQL notifications
@@ -360,7 +365,7 @@ async fn main() -> anyhow::Result<()> {
 
             // Setup a PostgreSQL trigger on insert in the contract index table and notify
             // for insertions relevant for our contract.
-            println!("Setting up PostgreSQL trigger and notifications.");
+            eprintln!("Setting up PostgreSQL trigger and notifications.");
             db_client
                 .execute(
                     format!(
@@ -389,7 +394,7 @@ async fn main() -> anyhow::Result<()> {
                 .context("Failed creating PostgreSQL trigger")?;
 
             // Await notifications, find and parse the relevant transaction summaries
-            println!("Started tracing contract events:");
+            eprintln!("Started tracing contract events:");
             while let Some(notification) = notifications.next().await {
                 if notification.channel() != "contract_updates" {
                     continue;
@@ -416,11 +421,6 @@ async fn main() -> anyhow::Result<()> {
             token_ids,
             contract,
         } => {
-            // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
-                .await
-                .context("Failed to connect to Node GRPC")?;
-
             let account_data: AccountData = serde_json::from_str(
                 &std::fs::read_to_string(sender).context("Could not read the keys file.")?,
             )
@@ -447,14 +447,20 @@ async fn main() -> anyhow::Result<()> {
             let transaction_payload = transactions::Payload::Update {
                 payload: update_payload,
             };
-            print!("Minting tokens with id: ");
+            eprint!("Minting tokens with id: ");
             for token_id in token_ids {
-                print!("{} ", token_id);
+                eprint!("{} ", token_id);
             }
-            println!();
+            eprintln!();
+
+            // The GRPC client for Concordium node.
+            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+                .await
+                .context("Failed to connect to Node GRPC")?;
+
             let hash =
                 send_transaction(&mut grpc_client, &account_data, transaction_payload).await?;
-            println!("Transaction send {}", hash);
+            eprintln!("Transaction with hash {} sent", hash);
         }
         Command::Transfer {
             sender,
@@ -465,11 +471,6 @@ async fn main() -> anyhow::Result<()> {
             to_func_data,
             contract,
         } => {
-            // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
-                .await
-                .context("Failed to connect to Node GRPC")?;
-
             let account_data: AccountData = serde_json::from_str(
                 &std::fs::read_to_string(sender).context("Could not read the keys file.")?,
             )
@@ -502,13 +503,18 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let transaction_payload = transactions::Payload::Update { payload };
-            println!(
+            eprintln!(
                 "Transferring tokens {:?} from {} to {:?}",
                 token_ids, from, to
             );
+            // The GRPC client for Concordium node.
+            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+                .await
+                .context("Failed to connect to Node GRPC")?;
+
             let hash =
                 send_transaction(&mut grpc_client, &account_data, transaction_payload).await?;
-            println!("Transaction send {}", hash);
+            eprintln!("Transaction with hash {} sent", hash);
         }
     }
 
@@ -521,28 +527,35 @@ fn collect_summary_contract_events(
     entry: DatabaseSummaryEntry,
     contract: types::ContractAddress,
 ) -> Vec<smart_contracts::ContractEvent> {
-    if let DatabaseSummaryEntry::BlockItem(item) = entry {
-        if let types::BlockItemSummaryDetails::AccountTransaction(tx) = item.details {
-            if let types::AccountTransactionEffects::ContractUpdateIssued { effects } = tx.effects {
-                let mut events = Vec::new();
-                for effect in effects {
-                    if let types::ContractTraceElement::Updated { data } = effect {
-                        if data.address == contract {
-                            events.extend(data.events)
-                        }
+    let effects = if let DatabaseSummaryEntry::BlockItem(types::BlockItemSummary {
+        details: types::BlockItemSummaryDetails::AccountTransaction(tx),
+        ..
+    }) = entry
+    {
+        tx.effects
+    } else {
+        return Vec::new();
+    };
+
+    match effects {
+        types::AccountTransactionEffects::ContractInitialized { data }
+            if data.address == contract =>
+        {
+            data.events
+        }
+        types::AccountTransactionEffects::ContractUpdateIssued { effects } => {
+            let mut events = Vec::new();
+            for effect in effects {
+                if let types::ContractTraceElement::Updated { data } = effect {
+                    if data.address == contract {
+                        events.extend(data.events)
                     }
                 }
-                return events;
-            } else if let types::AccountTransactionEffects::ContractInitialized { data } =
-                tx.effects
-            {
-                if data.address == contract {
-                    return data.events;
-                }
             }
+            events
         }
+        _ => Vec::new(),
     }
-    Vec::new()
 }
 
 /// Convert an account address from `types` to an account address from
@@ -581,10 +594,7 @@ fn convert_address(address: types::Address) -> concordium_contracts_common::Addr
 
 /// Print the NFT contract state in a human readable format.
 fn pretty_print_contract_state(state: &NFTContractState) {
-    for (owner, address_state) in &state.0 {
-        if address_state.owned_tokens.is_empty() && address_state.operators.is_empty() {
-            continue;
-        }
+    for (owner, address_state) in &state.state {
         match owner {
             concordium_contracts_common::Address::Account(addr) => println!("\n\n{}", addr),
             concordium_contracts_common::Address::Contract(addr) => println!("\n\n{}", addr),
@@ -630,6 +640,6 @@ async fn send_transaction(
     {
         Ok(hash)
     } else {
-        bail!("Transaction failed")
+        bail!("Transaction was rejected by the node.")
     }
 }
