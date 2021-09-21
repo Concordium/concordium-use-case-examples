@@ -15,6 +15,7 @@
 use anyhow::*;
 use clap::AppSettings;
 use common::{SerdeDeserialize, SerdeSerialize};
+use concordium_contracts_common::Deserial;
 use concordium_rust_sdk::{
     common, constants,
     endpoints::{Client, Endpoint},
@@ -23,6 +24,7 @@ use concordium_rust_sdk::{
     types,
 };
 use futures::{StreamExt, TryStreamExt};
+use nft_client::cts1;
 use smart_contracts::concordium_contracts_common;
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
@@ -34,9 +36,6 @@ use std::{
 use structopt::*;
 use thiserror::*;
 use types::{smart_contracts, transactions};
-
-mod cts1;
-use concordium_contracts_common::Deserial;
 
 /// Name of the NFT smart contract from the example implementing the CTS1
 /// specification.
