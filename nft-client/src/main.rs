@@ -311,7 +311,7 @@ enum Command {
                     contract receiving tokens, only used when `--to` is a contract address.",
             default_value = ""
         )]
-        to_func_data: cts1::ReceiveHookData,
+        to_func_data: cts1::AdditionalData,
     },
 }
 
@@ -476,15 +476,31 @@ async fn main() -> anyhow::Result<()> {
             )
             .context("Could not parse the accounts file.")?;
 
+            let to = match to.0 {
+                types::Address::Account(address) => {
+                    cts1::Receiver::Account(convert_account_address(&address))
+                }
+                types::Address::Contract(address) => {
+                    let receive_name = to_func
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Transferring to a contract, requires inputting a receive \
+                                 function --to-func"
+                            )
+                        })?
+                        .0;
+                    cts1::Receiver::Contract(convert_contract_address(&address), receive_name)
+                }
+            };
+
             let transfers = token_ids
                 .iter()
                 .map(|token_id| cts1::Transfer {
-                    token_id:     token_id.clone(),
-                    amount:       1,
-                    from:         convert_address(from.0.clone()),
-                    to:           convert_address(to.0.clone()),
-                    receive_name: to_func.as_ref().map(|wrapper| wrapper.clone().0),
-                    data:         to_func_data.clone(),
+                    token_id: token_id.clone(),
+                    amount:   1,
+                    from:     convert_address(from.0.clone()),
+                    to:       to.clone(),
+                    data:     to_func_data.clone(),
                 })
                 .collect();
 

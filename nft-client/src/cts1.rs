@@ -1,5 +1,6 @@
 use concordium_rust_sdk::types::smart_contracts::concordium_contracts_common::{
-    Address, Deserial, OwnedReceiveName, ParseError, Read, Serial, Write,
+    deserial_vector_no_length, serial_vector_no_length, AccountAddress, Address, ContractAddress,
+    Deserial, OwnedReceiveName, ParseError, Read, Serial, Write,
 };
 use std::{convert::TryFrom, fmt::Display, str::FromStr};
 use thiserror::*;
@@ -14,10 +15,10 @@ pub struct TokenIdVec(pub Vec<u8>);
 /// Error from parsing a token ID bytes from a hex encoded string.
 #[derive(Debug, Error)]
 pub enum ParseTokenIdVecError {
-    #[error("Failed to parse the hex: {0}")]
+    #[error("Invalid hex string: {0}")]
     ParseIntError(#[from] hex::FromHexError),
-    #[error("To many bytes for a token ID")]
-    ToManyBytes,
+    #[error("Token ID too large. Maximum allowed size is 255 bytes. {0} bytes was provided.")]
+    TooManyBytes(usize),
 }
 
 /// Parse a Token ID from a hex encoded string.
@@ -27,7 +28,7 @@ impl FromStr for TokenIdVec {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = hex::decode(s)?;
         if bytes.len() > 255 {
-            Err(ParseTokenIdVecError::ToManyBytes)
+            Err(ParseTokenIdVecError::TooManyBytes(bytes.len()))
         } else {
             Ok(TokenIdVec(bytes))
         }
@@ -47,10 +48,7 @@ impl Serial for TokenIdVec {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
         let len = u8::try_from(self.0.len()).map_err(|_| W::Err::default())?;
         len.serial(out)?;
-        for byte in &self.0 {
-            byte.serial(out)?;
-        }
-        Ok(())
+        serial_vector_no_length(&self.0, out)
     }
 }
 
@@ -58,18 +56,14 @@ impl Serial for TokenIdVec {
 impl Deserial for TokenIdVec {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
         let tokens_id_length = u8::deserial(source)?;
-        let mut bytes = Vec::with_capacity(tokens_id_length.into());
-        for _ in 0..tokens_id_length {
-            let byte = source.read_u8()?;
-            bytes.push(byte);
-        }
+        let bytes = deserial_vector_no_length(source, tokens_id_length.into())?;
         Ok(TokenIdVec(bytes))
     }
 }
 
 /// The parameter for the NFT Contract function "CTS1-NFT.mint".
 /// Important: this is specific to this NFT smart contract and contract
-/// functions for minting is not part of the CTS1 specification.
+/// functions for minting are not part of the CTS1 specification.
 #[derive(Debug)]
 pub struct MintParams {
     pub owner:     Address,
@@ -90,18 +84,20 @@ impl Serial for MintParams {
     }
 }
 
-/// Additional data bytes included with transfers the parameter for the CTS1
-/// contract function "transfer".
+/// Additional data bytes which can be included for each transfer in the
+/// transfer parameter for the CTS1 contract function "transfer".
 #[derive(Debug, Clone)]
-pub struct ReceiveHookData(pub Vec<u8>);
+pub struct AdditionalData {
+    pub data: Vec<u8>,
+}
 
 /// Serialization for the additional data, serialized as according to the CTS1
 /// specification.
-impl Serial for ReceiveHookData {
+impl Serial for AdditionalData {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
-        let len = u16::try_from(self.0.len()).map_err(|_| W::Err::default())?;
+        let len = u16::try_from(self.data.len()).map_err(|_| W::Err::default())?;
         len.serial(out)?;
-        for byte in &self.0 {
+        for byte in &self.data {
             byte.serial(out)?;
         }
         Ok(())
@@ -109,38 +105,63 @@ impl Serial for ReceiveHookData {
 }
 
 /// Parse the additional data from a hex string.
-impl FromStr for ReceiveHookData {
+impl FromStr for AdditionalData {
     type Err = hex::FromHexError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(ReceiveHookData(hex::decode(s)?.to_vec()))
+        Ok(AdditionalData {
+            data: hex::decode(s)?.to_vec(),
+        })
     }
 }
 
-/// A description of a transfer as according to the CTS1 specification.
-#[derive(Debug)]
-pub struct Transfer {
-    pub token_id:     TokenIdVec,
-    pub amount:       u64,
-    pub from:         Address,
-    pub to:           Address,
-    pub receive_name: Option<OwnedReceiveName>,
-    pub data:         ReceiveHookData,
+/// Address to receive an amount of tokens, it differs by the Address type by
+/// additionally requiring a contract receive function name when the address is
+/// a contract address.
+#[derive(Debug, Clone)]
+pub enum Receiver {
+    Account(AccountAddress),
+    Contract(ContractAddress, OwnedReceiveName),
 }
 
-/// Serialization of a transfer, as according to the CTS1 specification.
+impl Serial for Receiver {
+    fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
+        match self {
+            Receiver::Account(address) => {
+                0u8.serial(out)?;
+                address.serial(out)
+            }
+            Receiver::Contract(address, receive_name) => {
+                1u8.serial(out)?;
+                address.serial(out)?;
+                receive_name.as_ref().serial(out)
+            }
+        }
+    }
+}
+
+/// A description of a transfer according to the CTS1 specification.
+#[derive(Debug)]
+pub struct Transfer {
+    /// The ID of the token type to transfer.
+    pub token_id: TokenIdVec,
+    /// The amount of tokens to transfer.
+    pub amount:   u64,
+    /// The address currently owning the tokens being transferred.
+    pub from:     Address,
+    /// The receiver for the tokens being transferred.
+    pub to:       Receiver,
+    /// Additional data to include for the transfer
+    pub data:     AdditionalData,
+}
+
+/// Serialization of a transfer, according to the CTS1 specification.
 impl Serial for Transfer {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
         self.token_id.serial(out)?;
         self.amount.serial(out)?;
         self.from.serial(out)?;
         self.to.serial(out)?;
-        if let Address::Contract(_) = self.to {
-            self.receive_name
-                .as_ref()
-                .ok_or_else(W::Err::default)?
-                .serial(out)?;
-        }
         self.data.serial(out)?;
         Ok(())
     }
@@ -150,20 +171,18 @@ impl Serial for Transfer {
 #[derive(Debug)]
 pub struct TransferParams(pub Vec<Transfer>);
 
-/// Serialization of the transfer parameter, as according to the CTS1
+/// Serialization of the transfer parameter, according to the CTS1
 /// specification.
 impl Serial for TransferParams {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
         let len = u8::try_from(self.0.len()).map_err(|_| W::Err::default())?;
         len.serial(out)?;
-        for transfer in &self.0 {
-            transfer.serial(out)?;
-        }
-        Ok(())
+        serial_vector_no_length(&self.0, out)
     }
 }
 
 /// The type of update for an operator update.
+#[derive(Debug, Clone, Copy)]
 pub enum OperatorUpdate {
     /// Remove the operator.
     Remove,
@@ -171,7 +190,7 @@ pub enum OperatorUpdate {
     Add,
 }
 
-/// The deserialization of an operator update as according to the CTS1
+/// The deserialization of an operator update, according to the CTS1
 /// specification.
 impl Deserial for OperatorUpdate {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
@@ -184,32 +203,43 @@ impl Deserial for OperatorUpdate {
     }
 }
 
-/// A SHA256 digest.
-pub type Sha256 = [u8; 32];
+impl Display for OperatorUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let str = match self {
+            OperatorUpdate::Remove => "Remove",
+            OperatorUpdate::Add => "Add",
+        };
+        write!(f, "{}", str)
+    }
+}
+
+type Sha256 = [u8; 32];
 
 /// A URL for the metadata.
+#[derive(Debug)]
 pub struct MetadataUrl {
-    /// The url encoded as according to CTS1.
+    /// The url encoded according to CTS1.
     pub url:  String,
     /// An optional checksum of the content found at the URL.
     pub hash: Option<Sha256>,
 }
 
-/// Deserialization for MetadataUrl as according to the CTS1 specification.
+/// Deserialization for MetadataUrl according to the CTS1 specification.
 impl Deserial for MetadataUrl {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
         let len = source.read_u16()?;
-        let mut bytes = Vec::new();
+        let mut bytes = Vec::with_capacity(len.into());
         for _ in 0..len {
             bytes.push(source.read_u8()?)
         }
-        let url = String::from_utf8(bytes)?; //.map_err(|e| ParseError::default())?
+        let url = String::from_utf8(bytes)?;
         let hash = Option::<Sha256>::deserial(source)?;
         Ok(MetadataUrl { url, hash })
     }
 }
 
 /// Smart contract logged event, part of the CTS1 specification.
+#[derive(Debug)]
 pub enum Event {
     /// Transfer of an amount of tokens
     Transfer {
@@ -252,59 +282,49 @@ impl Display for Event {
                 token_id,
                 from,
                 to,
-                amount,
+                amount: _,
             } => {
-                if *amount > 0 {
-                    write!(
-                        f,
-                        "Transferred token with ID {} from {} to {}",
-                        token_id,
-                        address_display(from),
-                        address_display(to)
-                    )?;
-                }
+                write!(
+                    f,
+                    "Transferred token with ID {} from {} to {}",
+                    token_id,
+                    address_display(from),
+                    address_display(to)
+                )?;
             }
             Event::Mint {
                 token_id,
-                amount,
+                amount: _,
                 owner,
             } => {
-                if *amount > 0 {
-                    write!(
-                        f,
-                        "Minted token with ID {} for {}",
-                        token_id,
-                        address_display(owner)
-                    )?;
-                }
+                write!(
+                    f,
+                    "Minted token with ID {} for {}",
+                    token_id,
+                    address_display(owner)
+                )?;
             }
             Event::Burn {
                 token_id,
-                amount,
+                amount: _,
                 owner,
             } => {
-                if *amount > 0 {
-                    write!(
-                        f,
-                        "Burned token with ID {} for {}",
-                        token_id,
-                        address_display(owner)
-                    )?;
-                }
+                write!(
+                    f,
+                    "Burned token with ID {} for {}",
+                    token_id,
+                    address_display(owner)
+                )?;
             }
             Event::UpdateOperator {
                 update,
                 owner,
                 operator,
             } => {
-                let operation = match update {
-                    OperatorUpdate::Remove => "Remove",
-                    OperatorUpdate::Add => "Add",
-                };
                 write!(
                     f,
                     "{} {} as operator for {}",
-                    operation,
+                    update,
                     address_display(operator),
                     address_display(owner)
                 )?;
