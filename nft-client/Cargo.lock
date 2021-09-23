@@ -348,6 +348,8 @@ dependencies = [
  "id",
  "pedersen_scheme",
  "prost",
+ "rand 0.7.3",
+ "random_oracle",
  "rust_decimal",
  "semver 1.0.4",
  "serde",

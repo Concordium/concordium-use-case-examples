@@ -77,10 +77,7 @@ impl Serial for MintParams {
         self.owner.serial(out)?;
         let len = u8::try_from(self.token_ids.len()).map_err(|_| W::Err::default())?;
         len.serial(out)?;
-        for token in &self.token_ids {
-            token.serial(out)?;
-        }
-        Ok(())
+        serial_vector_no_length(&self.token_ids, out)
     }
 }
 
@@ -97,10 +94,7 @@ impl Serial for AdditionalData {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
         let len = u16::try_from(self.data.len()).map_err(|_| W::Err::default())?;
         len.serial(out)?;
-        for byte in &self.data {
-            byte.serial(out)?;
-        }
-        Ok(())
+        serial_vector_no_length(&self.data, out)
     }
 }
 

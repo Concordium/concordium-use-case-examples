@@ -94,8 +94,10 @@ impl concordium_contracts_common::Deserial for NFTContractState {
         source: &mut R,
     ) -> Result<Self, concordium_contracts_common::ParseError> {
         let length = u32::deserial(source)?;
-        let state =
-            concordium_contracts_common::deserial_map_no_length(source, length.try_into()?)?;
+        let state = concordium_contracts_common::deserial_map_no_length_no_order_check(
+            source,
+            length.try_into()?,
+        )?;
         Ok(NFTContractState { state })
     }
 }
@@ -446,6 +448,7 @@ async fn main() -> anyhow::Result<()> {
             let transaction_payload = transactions::Payload::Update {
                 payload: update_payload,
             };
+            let tokens_len = u64::try_from(token_ids.len())?;
             eprint!("Minting tokens with id: ");
             for token_id in token_ids {
                 eprint!("{} ", token_id);
@@ -457,8 +460,16 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
-            let hash =
-                send_transaction(&mut grpc_client, &account_data, transaction_payload).await?;
+            // Measured by experiments, will likely break if contract state becomes large:
+            let estimated_energy = 300 * tokens_len + 2000;
+
+            let hash = send_transaction(
+                &mut grpc_client,
+                &account_data,
+                transaction_payload,
+                transactions::send::GivenEnergy::Add(estimated_energy.into()),
+            )
+            .await?;
             eprintln!("Transaction with hash {} sent", hash);
         }
         Command::Transfer {
@@ -527,8 +538,16 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
-            let hash =
-                send_transaction(&mut grpc_client, &account_data, transaction_payload).await?;
+            // Measured by experiments, will likely break if contract state becomes large:
+            let estimated_energy = 300 * u64::try_from(token_ids.len())? + 2000;
+
+            let hash = send_transaction(
+                &mut grpc_client,
+                &account_data,
+                transaction_payload,
+                transactions::send::GivenEnergy::Add(estimated_energy.into()),
+            )
+            .await?;
             eprintln!("Transaction with hash {} sent", hash);
         }
     }
@@ -634,11 +653,15 @@ async fn send_transaction(
     client: &mut Client,
     account_data: &AccountData,
     payload: transactions::Payload,
+    energy: transactions::send::GivenEnergy,
 ) -> anyhow::Result<types::hashes::TransactionHash> {
     let next_account_nonce = client.get_next_account_nonce(&account_data.address).await?;
+    ensure!(
+        next_account_nonce.all_final,
+        "There are unfinalized transactions. Transaction nonce is not reliable enough."
+    );
     let expiry =
         common::types::TransactionTime::from_seconds((chrono::Utc::now().timestamp() + 300) as u64);
-    let energy = transactions::send::GivenEnergy::Add(3000.into());
     let tx = transactions::send::make_and_sign_transaction(
         &account_data.account_keys,
         account_data.address,
