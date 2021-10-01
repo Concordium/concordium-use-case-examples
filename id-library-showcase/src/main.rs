@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use clap::AppSettings;
 use concordium_rust_sdk::endpoints;
-use crypto_common::{types::CredentialIndex, version::*, SerdeDeserialize, SerdeSerialize};
-use id::{ffi::*, id_prover::*, id_verifier::*, types::*};
+use crypto_common::{types::CredentialIndex, SerdeDeserialize, SerdeSerialize};
+use id::{id_prover::*, id_verifier::*, types::*, constants::AttributeKind};
 
-use pedersen_scheme::randomness::Randomness as PedersenRandomness;
+use pedersen_scheme::Randomness as PedersenRandomness;
 use structopt::StructOpt;
 
 use bulletproofs::range_proof::RangeProof;
@@ -24,29 +24,81 @@ use std::{
 };
 
 use dialoguer::Input;
-
+use anyhow::Context;
 pub type ExampleCurve = <Bls12 as Pairing>::G1;
 
 pub type ExampleAttribute = AttributeKind;
+
+
+#[derive(SerdeSerialize, SerdeDeserialize)]
+#[serde(bound(serialize = "C: Curve", deserialize = "C: Curve"))]
+struct ImportedAccount<C: Curve>{
+    address: AccountAddress,
+    #[serde(rename = "commitmentsRandomness")]
+    commitments_randomness: Option<CommitmentsRandomness<C>>
+}
+
+#[derive(Clone, SerdeSerialize, SerdeDeserialize)]
+#[serde(bound(
+    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
+    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
+))]
+struct Attributes<C:Curve, AttributeType: Attribute<C::Scalar>> {
+    #[serde(rename = "attributeList")]
+    attribute_list: AttributeList<C::Scalar, AttributeType>,
+}
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
 #[serde(bound(
     serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
     deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
 ))]
+struct ImportedIdentity<C: Curve, AttributeType: Attribute<C::Scalar>> {
+    accounts: Vec<ImportedAccount<C>>,
+    #[serde(rename = "identityObject")]
+    identity_object: Attributes<C, AttributeType>
+}
+
+#[derive(SerdeSerialize, SerdeDeserialize)]
+#[serde(bound(
+    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
+    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
+))]
+struct ImportedIdentities<C: Curve, AttributeType: Attribute<C::Scalar>> {
+    identities: Vec<ImportedIdentity<C, AttributeType>>
+}
+
+#[derive(SerdeSerialize, SerdeDeserialize)]
+#[serde(bound(
+    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
+    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
+))]
+struct Wallet<C:Curve, AttributeType: Attribute<C::Scalar>>{
+    value: ImportedIdentities<C, AttributeType>
+}
+
+#[derive(SerdeSerialize, SerdeDeserialize)]
+#[serde(bound(
+    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
+    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
+))]
+#[serde(tag = "type")]
 pub enum Claim<C: Curve, AttributeType: Attribute<C::Scalar>> {
     AttributeOpening {
+        #[serde(rename = "attributeTag")]
         attribute_tag: AttributeTag,
         attribute: AttributeType,
         proof: PedersenRandomness<C>,
     },
     AttributeInRange {
+        #[serde(rename = "attributeTag")]
         attribute_tag: AttributeTag,
         lower: AttributeType,
         upper: AttributeType,
         proof: RangeProof<C>,
     },
     AccountOwnership {
+        #[serde(skip)]
         phantom_data: PhantomData<(C, AttributeType)>,
     },
 }
@@ -76,14 +128,6 @@ where
     let reader = BufReader::new(file);
     let u = serde_json::from_reader(reader)?;
     Ok(u)
-}
-
-fn read_global_context<P: AsRef<Path> + Debug>(filename: P) -> Option<GlobalContext<ExampleCurve>> {
-    let params: Versioned<serde_json::Value> = read_json_from_file(filename).ok()?;
-    match params.version {
-        Version { value: 0 } => serde_json::from_value(params.value).ok(),
-        _ => None,
-    }
 }
 
 #[derive(StructOpt)]
@@ -158,10 +202,10 @@ struct ProveAttributeInRange {
         help = "Path to file containing randomness used to produce to commitment."
     )]
     randomness: PathBuf,
-    #[structopt(long = "global", help = "Path to file with global context.")]
-    global: PathBuf,
     #[structopt(long = "proof-out", help = "Path to output proof to.")]
     out: PathBuf,
+    #[structopt(long = "grpc")]
+    endpoint: endpoints::Endpoint,
 }
 
 #[derive(StructOpt)]
@@ -180,14 +224,25 @@ struct RevealAttribute {
     attribute_tag: AttributeTag,
     #[structopt(
         long = "attribute",
-        help = "The attribute value inside the commitment."
+        help = "The attribute value inside the commitment.",
+        required_unless = "wallet",
+        conflicts_with = "wallet"
     )]
-    attribute: ExampleAttribute,
+    attribute: Option<ExampleAttribute>,
     #[structopt(
         long = "randomness",
-        help = "Path to file containing randomness used to produce to commitment."
+        help = "Path to file containing randomness used to produce to commitment.",
+        required_unless = "wallet",
+        conflicts_with = "wallet"
     )]
-    randomness: PathBuf,
+    randomness: Option<PathBuf>,
+    #[structopt(
+        long = "--wallet",
+        help = "Path to file mobile wallet export.",
+        required_unless = "randomness",
+        conflicts_with = "randomness"
+    )]
+    wallet: Option<PathBuf>,
     #[structopt(long = "proof-out", help = "Path to output proof to.")]
     out: PathBuf,
 }
@@ -208,7 +263,7 @@ struct ClaimAccountOwnership {
 #[derive(StructOpt)]
 struct VerifyClaim {
     #[structopt(long = "grpc")]
-    endpoint: tonic::transport::Endpoint,
+    endpoint: endpoints::Endpoint,
     #[structopt(long = "claim", help = "The path to a file containing a claim.")]
     claim: PathBuf,
 }
@@ -224,7 +279,7 @@ async fn main() -> anyhow::Result<()> {
     match client {
         ProveOwnership(po) => handle_prove_ownership(po),
         VerifyClaim(vc) => handle_verify_claim(*vc).await?,
-        ProveAttributeInRange(pair) => handle_prove_attribute_in_range(pair),
+        ProveAttributeInRange(pair) => handle_prove_attribute_in_range(pair).await?,
         RevealAttribute(ra) => handle_reveal_attribute(ra),
         ClaimAccountOwnership(cao) => handle_claim_ownership(cao),
     }
@@ -298,7 +353,7 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
                     &commitment,
                     &proof,
                 );
-                println!("Result: {}", b);
+                println!("Result: {}", b.is_ok());
             } else {
                 println!(
                     "No commitment to attribute {} on given account.",
@@ -355,23 +410,13 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) {
-    let randomness: PedersenRandomness<ExampleCurve> = match read_json_from_file(pair.randomness) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Could not parse randomness: {}. Terminating.", e);
-            return;
-        }
-    };
-
-    let global_ctx = {
-        if let Some(gc) = read_global_context(pair.global) {
-            gc
-        } else {
-            eprintln!("Cannot read global context information database. Terminating.");
-            return;
-        }
-    };
+async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow::Result<()> {
+    let mut client = endpoints::Client::connect(pair.endpoint, "rpcadmin".to_string()).await?;
+    let consensus_info = client.get_consensus_status().await?;
+    let global_ctx = client
+        .get_cryptographic_parameters(&consensus_info.last_finalized_block)
+        .await?;
+    let randomness: PedersenRandomness<ExampleCurve> = read_json_from_file(pair.randomness)?;
     let proof = prove_attribute_in_range(
         &global_ctx.bulletproof_generators(),
         &global_ctx.on_chain_commitment_key,
@@ -391,28 +436,90 @@ fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) {
                 proof,
             },
         };
-        if let Err(e) = write_json_to_file(&pair.out, &claim) {
-            eprintln!("Could not output claim with proof: {}", e);
-            return;
+        write_json_to_file(&pair.out, &claim)?;
+    }
+    Ok(())
+}
+
+fn read_attribute_and_randomness_from_wallet(account: AccountAddress, tag: AttributeTag, wallet: Wallet<ExampleCurve, ExampleAttribute>) -> Result<(AttributeKind, PedersenRandomness<ExampleCurve>), String> {
+    let maybe_randomness : Option<(Attributes<ExampleCurve, ExampleAttribute>, CommitmentsRandomness<ExampleCurve>)> = {
+        let mut found = None;
+        for identity in wallet.value.identities {
+            if let Some(acc) = identity.accounts.into_iter().find(|x| x.address == account) {
+                if let Some(rand) = acc.commitments_randomness {
+                    found = Some((identity.identity_object, rand));
+                } else {
+                    return Err(format!("Randomness for account {} not found in wallet import.", account));
+                }
+                break;
+            }
         }
+        found
+    };
+    let (attribute, randomness) = match maybe_randomness {
+        Some((id,rand)) => {
+            match (id.attribute_list.alist.get(&tag), rand.attributes_rand.get(&tag)) {
+                (Some(a), Some(r)) => (a.clone(), r.clone()),
+                (_, _) => {return Err(format!("Attribute randomness {} not found on account {} in wallet import.", tag, account));}
+            }
+        },
+        None => {return Err(format!("Account {} not found in wallet.", account));}
+    };
+    Ok((attribute, randomness))
+}
+
+fn decrypt_wallet(file : PathBuf) -> anyhow::Result<Wallet<ExampleCurve, ExampleAttribute>> {
+    let data = std::fs::read(&file).context("Cannot read wallet input file.")?;
+    let parsed_data = serde_json::from_slice(&data)?;
+    let pass = rpassword::read_password_from_tty(Some("Enter password to decrypt with: "))?;
+    let plaintext = match crypto_common::encryption::decrypt(&pass.into(), &parsed_data) {
+        Ok(pt) => pt,
+        Err(_) => anyhow::bail!("Could not decrypt."),
+    };
+    match serde_json::from_slice(&plaintext) {
+        Ok(wallet) => Ok(wallet),
+        Err(e) => anyhow::bail!("Could not parse wallet: {}.",e)
     }
 }
 
 fn handle_reveal_attribute(ra: RevealAttribute) {
-    let randomness: PedersenRandomness<ExampleCurve> = match read_json_from_file(ra.randomness) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Could not parse randomness: {}. Terminating.", e);
-            return;
-        }
-    };
+    let account = ra.account;
+    let tag = ra.attribute_tag;
+    let (attribute, randomness): (AttributeKind, PedersenRandomness<ExampleCurve>) =
+        match (ra.attribute, ra.randomness, ra.wallet) {
+            (Some(attribute), Some(randomness_file), _) => match read_json_from_file(randomness_file) {
+                Ok(r) => (attribute, r),
+                Err(e) => {
+                    eprintln!("Could not parse randomness: {}. Terminating.", e);
+                    return;
+                }
+            },
+            (_, _, Some(wallet_file)) => {
+                match decrypt_wallet(wallet_file){
+                    Ok(wallet) => {
+                        match read_attribute_and_randomness_from_wallet(account, tag, wallet) {
+                            Ok(x) => x,
+                            Err(e) => {
+                                eprintln!("Could not parse wallet: {} Terminating.", e);
+                                return;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        return;
+                    }
+                }
+            },
+            (_, _, _) => panic!("Attribute and randomness, or wallet is needed."),
+        };
     let proof = randomness;
     let claim = ClaimAboutAccount {
-        account: ra.account,
+        account,
         credential_index: ra.credential_index,
         claim: Claim::AttributeOpening {
             attribute_tag: ra.attribute_tag,
-            attribute: ra.attribute,
+            attribute,
             proof,
         },
     };
