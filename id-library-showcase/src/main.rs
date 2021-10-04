@@ -143,7 +143,7 @@ enum IdClient {
         name = "prove-attribute-in-range",
         about = "Claim that an attribute lies in a range and produce a proof."
     )]
-    ProveAttributeInRange(ProveAttributeInRange),
+    ProveAttributeInRange(Box<ProveAttributeInRange>),
     #[structopt(
         name = "reveal-attribute",
         about = "Reveal an attribute inside a commitment."
@@ -309,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
     match client {
         ProveOwnership(po) => handle_prove_ownership(po),
         VerifyClaim(vc) => handle_verify_claim(*vc).await?,
-        ProveAttributeInRange(pair) => handle_prove_attribute_in_range(pair).await?,
+        ProveAttributeInRange(pair) => handle_prove_attribute_in_range(*pair).await?,
         RevealAttribute(ra) => handle_reveal_attribute(ra),
         ClaimAccountOwnership(cao) => handle_claim_ownership(cao),
     }
