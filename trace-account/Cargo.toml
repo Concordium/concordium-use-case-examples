@@ -1,0 +1,25 @@
+[package]
+name = "trace-account"
+version = "0.1.0"
+edition = "2018"
+
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = "2.33"
+structopt = "0.3"
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tokio = { version = "1.8.0", features = ["full"] }
+serde = "1.0"
+serde_json = "1.0"
+hex = "0.4.3"
+anyhow = "1.0"
+chrono = "0.4.19"
+futures = "0.3"
+
+
+[dependencies.concordium-rust-sdk]
+path = "../deps/concordium-rust-sdk"
+version = "*"
