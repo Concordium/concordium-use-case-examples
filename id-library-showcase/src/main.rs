@@ -35,7 +35,10 @@ pub type ExampleAttribute = AttributeKind;
 struct ImportedAccount<C: Curve>{
     address: AccountAddress,
     #[serde(rename = "commitmentsRandomness")]
-    commitments_randomness: Option<CommitmentsRandomness<C>>
+    commitments_randomness: Option<CommitmentsRandomness<C>>,
+    #[serde(rename = "accountKeys")]
+    account_keys: AccountKeys,
+
 }
 
 #[derive(Clone, SerdeSerialize, SerdeDeserialize)]
@@ -157,9 +160,25 @@ enum IdClient {
 struct ProveOwnership {
     #[structopt(
         long = "private-keys",
-        help = "File containing private credential keys."
+        help = "File containing private credential keys.",
+        required_unless = "wallet",
+        conflicts_with = "wallet"
     )]
-    private_keys: PathBuf,
+    private_keys: Option<PathBuf>,
+    #[structopt(
+        long = "wallet",
+        help = "Path to file mobile wallet export.",
+        required_unless = "private-keys",
+        conflicts_with = "private-keys"
+    )]
+    wallet: Option<PathBuf>,
+    #[structopt(
+        long = "credential-index",
+        help = "The credential index of the relevant credential on the account.",
+        required_unless = "private-keys",
+        conflicts_with = "private-keys"
+    )]
+    credential_index: Option<CredentialIndex>,
     #[structopt(long = "account", help = "Account address-")]
     account: AccountAddress,
     #[structopt(long = "challenge", help = "File containing verifier's challenge.")]
@@ -184,9 +203,11 @@ struct ProveAttributeInRange {
     attribute_tag: AttributeTag,
     #[structopt(
         long = "attribute",
-        help = "The attribute value inside the commitment."
+        help = "The attribute value inside the commitment.",
+        required_unless = "wallet",
+        conflicts_with = "wallet"
     )]
-    attribute: ExampleAttribute,
+    attribute: Option<ExampleAttribute>,
     #[structopt(
         long = "upper",
         help = "The upper bound of the value inside the commitment."
@@ -199,9 +220,18 @@ struct ProveAttributeInRange {
     lower: ExampleAttribute,
     #[structopt(
         long = "randomness",
-        help = "Path to file containing randomness used to produce to commitment."
+        help = "Path to file containing randomness used to produce to commitment.",
+        required_unless = "wallet",
+        conflicts_with = "wallet"
     )]
-    randomness: PathBuf,
+    randomness: Option<PathBuf>,
+    #[structopt(
+        long = "wallet",
+        help = "Path to file mobile wallet export.",
+        required_unless = "randomness",
+        conflicts_with = "randomness"
+    )]
+    wallet: Option<PathBuf>,
     #[structopt(long = "proof-out", help = "Path to output proof to.")]
     out: PathBuf,
     #[structopt(long = "grpc")]
@@ -237,7 +267,7 @@ struct RevealAttribute {
     )]
     randomness: Option<PathBuf>,
     #[structopt(
-        long = "--wallet",
+        long = "wallet",
         help = "Path to file mobile wallet export.",
         required_unless = "randomness",
         conflicts_with = "randomness"
@@ -411,26 +441,54 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
 }
 
 async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow::Result<()> {
+    let account = pair.account;
+    let attribute_tag = pair.attribute_tag;
     let mut client = endpoints::Client::connect(pair.endpoint, "rpcadmin".to_string()).await?;
     let consensus_info = client.get_consensus_status().await?;
     let global_ctx = client
         .get_cryptographic_parameters(&consensus_info.last_finalized_block)
         .await?;
-    let randomness: PedersenRandomness<ExampleCurve> = read_json_from_file(pair.randomness)?;
+    // let randomness: PedersenRandomness<ExampleCurve> = read_json_from_file(pair.randomness)?;
+    let (attribute, randomness): (AttributeKind, PedersenRandomness<ExampleCurve>) =
+        match (pair.attribute, pair.randomness, pair.wallet) {
+            (Some(attribute), Some(randomness_file), _) => 
+            match read_json_from_file(randomness_file) {
+                Ok(r) => (attribute, r),
+                Err(e) => {
+                    anyhow::bail!("Could not parse randomness: {}. Terminating.", e)
+                }
+            },
+            (_, _, Some(wallet_file)) => {
+                match decrypt_wallet(wallet_file){
+                    Ok(wallet) => {
+                        match read_attribute_and_randomness_from_wallet(account, attribute_tag, wallet) {
+                            Ok(x) => x,
+                            Err(e) => {
+                                anyhow::bail!("Could not parse wallet: {} Terminating.", e);
+                            }
+                        }
+                    },
+                    Err(e) => {
+                       anyhow::bail!("Error: {}", e);
+                    }
+                }
+            },
+            (_, _, _) => anyhow::bail!("Attribute and randomness, or wallet is needed."),
+        };
     let proof = prove_attribute_in_range(
         &global_ctx.bulletproof_generators(),
         &global_ctx.on_chain_commitment_key,
-        &pair.attribute,
+        &attribute,
         &pair.lower,
         &pair.upper,
         &randomness,
     );
     if let Some(proof) = proof {
         let claim = ClaimAboutAccount {
-            account: pair.account,
+            account,
             credential_index: pair.credential_index,
             claim: Claim::AttributeInRange {
-                attribute_tag: pair.attribute_tag,
+                attribute_tag,
                 lower: pair.lower,
                 upper: pair.upper,
                 proof,
@@ -466,6 +524,15 @@ fn read_attribute_and_randomness_from_wallet(account: AccountAddress, tag: Attri
         None => {return Err(format!("Account {} not found in wallet.", account));}
     };
     Ok((attribute, randomness))
+}
+
+fn read_account_keys_from_wallet(account: AccountAddress, wallet: &Wallet<ExampleCurve, ExampleAttribute>) -> Result<&AccountKeys, String> {
+    for identity in wallet.value.identities.iter() {
+        if let Some(acc) = identity.accounts.iter().find(|x| x.address == account) {
+            return Ok(&acc.account_keys);
+        }
+    }
+    Err(format!("Account {} not found in wallet.", account))
 }
 
 fn decrypt_wallet(file : PathBuf) -> anyhow::Result<Wallet<ExampleCurve, ExampleAttribute>> {
@@ -544,13 +611,6 @@ fn handle_claim_ownership(cao: ClaimAccountOwnership) {
 }
 
 fn handle_prove_ownership(po: ProveOwnership) {
-    let cred_data: CredentialData = match read_json_from_file(po.private_keys) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Could not parse credential data: {}. Terminating.", e);
-            return;
-        }
-    };
     let challenge: [u8; 32] = match read_json_from_file(po.challenge) {
         Ok(c) => c,
         Err(e) => {
@@ -558,8 +618,48 @@ fn handle_prove_ownership(po: ProveOwnership) {
             return;
         }
     };
+    let proof: AccountOwnershipProof =
+        match (po.private_keys, po.wallet, po.credential_index) {
+            (Some(file), _, _) => {
+                let cred_data : CredentialData = match read_json_from_file(file) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Could not parse credential data: {}. Terminating.", e);
+                        return;
+                    }
+                };
+                prove_ownership_of_account(&cred_data, po.account, &challenge)
+            },
+            (_, Some(wallet_file), Some(index)) => 
+                match decrypt_wallet(wallet_file){
+                    Ok(wallet) => {
+                        match read_account_keys_from_wallet(po.account, &wallet) {
+                            Ok(x) => {
+                                match x.keys.get(&index) {
+                                    Some(cred_data) => prove_ownership_of_account(cred_data, po.account, &challenge),
+                                    None => {
+                                        eprintln!("Provided wallet contains no keys for given credential index.");
+                                        return;
+                                    }
+                                }
+                            },
+                            Err(e) => {
+                                eprintln!("Could not parse wallet: {} Terminating.", e);
+                                return;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        return;
+                    }
+                },
+            (_, _, _) => {
+                eprintln!("No private keys provided.");
+                return;
+            }
+        };
 
-    let proof = prove_ownership_of_account(cred_data, po.account, &challenge);
 
     if let Err(e) = write_json_to_file(&po.out, &proof) {
         eprintln!("Could not output proof: {}", e);
