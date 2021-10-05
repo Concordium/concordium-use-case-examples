@@ -1,11 +1,11 @@
 //! This is an example of an off-chain application which integrates with a smart
 //! contract on chain. The application is a client for working with a specific
 //! implementation of a Non-fungible token(NFT) smart contract.
-//! The smart contract should follow the CTS1 specification, but some additional
+//! The smart contract should follow the CIS1 specification, but some additional
 //! assumptions are made for how the contract serializes the state and the
 //! existence of a "mint" contract function.
 //!
-//! The smart contract is called "CTS1-NFT" and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
+//! The smart contract is called "CIS1-NFT" and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
 //!
 //! Most of the functionality needs access to the GRPC API of a running
 //! concordium-node. Some functionality of the client additionally depends on
@@ -24,7 +24,7 @@ use concordium_rust_sdk::{
     types,
 };
 use futures::{StreamExt, TryStreamExt};
-use nft_client::cts1;
+use nft_client::cis1;
 use smart_contracts::concordium_contracts_common;
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
@@ -37,25 +37,25 @@ use structopt::*;
 use thiserror::*;
 use types::{smart_contracts, transactions};
 
-/// Name of the NFT smart contract from the example implementing the CTS1
+/// Name of the NFT smart contract from the example implementing the CIS1
 /// specification.
-const NFT_CONTRACT_NAME: &str = "CTS1-NFT";
+const NFT_CONTRACT_NAME: &str = "CIS1-NFT";
 
 /// The NFT contract state for each address.
 /// Important: this structure matches the NFT contract implementations and
-/// cannot be assumed for any CTS1 contract state, as the CTS1 does not restrict
+/// cannot be assumed for any CIS1 contract state, as the CIS1 does not restrict
 /// the state in anyway.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct NFTContractAddressState {
     /// The tokens owned by this address.
-    owned_tokens: Set<cts1::TokenIdVec>,
+    owned_tokens: Set<cis1::TokenIdVec>,
     /// The address which are currently enabled as operators for this address.
     operators:    Set<concordium_contracts_common::Address>,
 }
 
 /// Deserialization of AddressState.
 /// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed for any CTS1 contract state is serialized, as the CTS1
+/// and cannot be assumed for any CIS1 contract state is serialized, as the CIS1
 /// does not restrict how to encode the state in anyway.
 impl Deserial for NFTContractAddressState {
     fn deserial<R: concordium_contracts_common::Read>(
@@ -78,7 +78,7 @@ impl Deserial for NFTContractAddressState {
 
 /// The NFT contract state.
 /// Important: this structure matches the NFT contract implementations and
-/// cannot be assumed for any CTS1 contract state, as the CTS1 does not restrict
+/// cannot be assumed for any CIS1 contract state, as the CIS1 does not restrict
 /// the state in anyway.
 #[derive(Debug)]
 struct NFTContractState {
@@ -87,7 +87,7 @@ struct NFTContractState {
 
 /// Deserialization of the NFT contract state.
 /// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed for any CTS1 contract state is serialized, as the CTS1
+/// and cannot be assumed for any CIS1 contract state is serialized, as the CIS1
 /// does not restrict how to encode the state in anyway.
 impl concordium_contracts_common::Deserial for NFTContractState {
     fn deserial<R: concordium_contracts_common::Read>(
@@ -208,7 +208,7 @@ fn box_postgres_from_str(s: &str) -> Result<Box<postgres::Config>, tokio_postgre
 #[derive(StructOpt)]
 #[structopt(
     bin_name = "nft-client",
-    about = "NFT client tool for interacting with CTS1 NFT token contracts on the Concordium \
+    about = "NFT client tool for interacting with CIS1 NFT token contracts on the Concordium \
              blockchain"
 )]
 struct App {
@@ -262,7 +262,7 @@ enum Command {
         )]
         sender:    PathBuf,
         #[structopt(help = "Token ID to mint in the contract.")]
-        token_ids: Vec<cts1::TokenIdVec>,
+        token_ids: Vec<cis1::TokenIdVec>,
     },
     #[structopt(name = "transfer", help = "Transfer one NFT to another address.")]
     Transfer {
@@ -279,7 +279,7 @@ enum Command {
             long = "token",
             help = "Token ID to transfer in the contract."
         )]
-        token_ids:    Vec<cts1::TokenIdVec>,
+        token_ids:    Vec<cis1::TokenIdVec>,
         #[structopt(
             name = "from",
             long = "from",
@@ -312,7 +312,7 @@ enum Command {
                     contract receiving tokens, only used when `--to` is a contract address.",
             default_value = ""
         )]
-        to_func_data: cts1::AdditionalData,
+        to_func_data: cis1::AdditionalData,
     },
 }
 
@@ -411,7 +411,7 @@ async fn main() -> anyhow::Result<()> {
                 let events = collect_summary_contract_events(summary, contract.0);
                 for event in events {
                     let mut cursor = concordium_contracts_common::Cursor::new(event.as_ref());
-                    let event = cts1::Event::deserial(&mut cursor)
+                    let event = cis1::Event::deserial(&mut cursor)
                         .map_err(|_| anyhow!("Failed parsing event"))?;
                     println!("{}", event);
                 }
@@ -428,7 +428,7 @@ async fn main() -> anyhow::Result<()> {
             .context("Could not parse the accounts file.")?;
 
             let owner = convert_account_address(&account_data.address);
-            let mint_parameter = cts1::MintParams {
+            let mint_parameter = cis1::MintParams {
                 owner:     concordium_contracts_common::Address::Account(owner),
                 token_ids: token_ids.clone(),
             };
@@ -488,7 +488,7 @@ async fn main() -> anyhow::Result<()> {
 
             let to = match to.0 {
                 types::Address::Account(address) => {
-                    cts1::Receiver::Account(convert_account_address(&address))
+                    cis1::Receiver::Account(convert_account_address(&address))
                 }
                 types::Address::Contract(address) => {
                     let receive_name = to_func
@@ -499,13 +499,13 @@ async fn main() -> anyhow::Result<()> {
                             )
                         })?
                         .0;
-                    cts1::Receiver::Contract(convert_contract_address(&address), receive_name)
+                    cis1::Receiver::Contract(convert_contract_address(&address), receive_name)
                 }
             };
 
             let transfers = token_ids
                 .iter()
-                .map(|token_id| cts1::Transfer {
+                .map(|token_id| cis1::Transfer {
                     token_id: token_id.clone(),
                     amount:   1,
                     from:     convert_address(from.0.clone()),
@@ -514,7 +514,7 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .collect();
 
-            let parameter = cts1::TransferParams(transfers);
+            let parameter = cis1::TransferParams(transfers);
             let bytes = concordium_contracts_common::to_bytes(&parameter);
 
             let payload = transactions::UpdateContractPayload {
