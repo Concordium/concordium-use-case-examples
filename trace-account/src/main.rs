@@ -149,12 +149,7 @@ async fn main() {
             let futures = inputs
                 .iter()
                 .map(|input| trace_single_account(&table, &db, input));
-            for res in futures {
-                match res.await {
-                    Ok(()) => (),
-                    Err(e) => panic!("Tracing failed: {}", e),
-                };
-            }
+            future::join_all(futures).await;
         }
         Mode::Single {
             address,
