@@ -10,9 +10,8 @@ use concordium_rust_sdk::{
 };
 use csv;
 use futures::*;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Serialize, Serializer};
 use std::{
-    error::Error,
     fmt::Debug,
     fs::File,
     io::{self, BufReader},
@@ -21,10 +20,26 @@ use std::{
 use structopt::StructOpt;
 use tokio_postgres::NoTls;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum AmountDelta {
     PositiveAmount(Amount),
     NegativeAmount(Amount),
+}
+
+impl Serialize for AmountDelta {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            AmountDelta::PositiveAmount(am) => {
+                serializer.serialize_i64(am.microgtu as i64)
+            }
+            AmountDelta::NegativeAmount(am) => {
+                serializer.serialize_i64(-(am.microgtu as i64))
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for AmountDelta {
@@ -81,6 +96,7 @@ enum Mode {
     },
 }
 
+
 #[derive(StructOpt)]
 struct Trace {
     #[structopt(
@@ -90,15 +106,9 @@ struct Trace {
     )]
     global: PathBuf,
     #[structopt(
-        long = "out",
-        help = "File to output the account trace to. If not provided the data is printed to \
-                stdout."
-    )]
-    out:    Option<PathBuf>,
-    #[structopt(
         long = "db",
         default_value = "host=localhost dbname=transaction-outcome user=postgres \
-                         password=password port=5432",
+        password=password port=5432",
         help = "Database connection string."
     )]
     config: tokio_postgres::Config,
@@ -106,7 +116,8 @@ struct Trace {
     mode:   Mode,
 }
 
-#[tokio::main]
+// TODO: we should add support for queriyng via credid.
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let app = Trace::clap()
         .setting(AppSettings::ArgRequiredElseHelp)
@@ -133,11 +144,6 @@ async fn main() {
         Ok(db) => db,
         Err(e) => panic!("Connection to database failed: {}", e),
     };
-    let mut writer: Box<dyn std::io::Write> = if let Some(file) = tr.out {
-        Box::new(std::fs::File::create(file).expect("Cannot create output file"))
-    } else {
-        Box::new(std::io::stdout())
-    };
     match tr.mode {
         Mode::All { regids_file } => {
             let inputs: Vec<RetrievalInput> = match read_json_from_file(regids_file) {
@@ -148,8 +154,7 @@ async fn main() {
                 }
             };
             for input in inputs.iter() {
-                trace_single_account(&table, &db, input, &mut writer).await;
-                writeln!(writer, "\n\n").expect("Could not write.");
+                trace_single_account(&table, &db, input).await; // todo start them async
             }
         }
         Mode::Single {
@@ -178,50 +183,40 @@ async fn main() {
                     encryption_secret_key: None,
                 },
             };
-            trace_single_account(&table, &db, &input, &mut writer).await;
+            trace_single_account(&table, &db, &input).await;
         }
     };
 }
 
-// Columns in CSV:
-// Timestamp
-// Transaction or Reward Type
-// Sender
-// Receiver
-// Cost
-// Reward
-// Amount
-// ...
 #[derive(Debug, Serialize)]
 struct CsvRow {
-    timestamp:               Timestamp,
+    time:               String,
     transaction_type:        String,
-    sender:                  Option<AccountAddress>, /* todo should we be able to handle
-                                                      * contract addresses? */
+    sender:                  Option<AccountAddress>,
     receiver:                Option<AccountAddress>,
     cost:                    Option<Amount>,
-    reward:                  Option<Amount>, // could be included in a net added to or net total
-    added_to_traced_account: Option<AmountDelta>, /* net effects of all amounts moved on the account
-                                              * being traced, not including cost */
-    total:                   AmountDelta,
+    reward:                  Option<Amount>,
+    summed_transfers: Option<AmountDelta>,
+    public_total:                   AmountDelta, // summed_transfers + reward - cost
+    encrypted_total:         Option<AmountDelta> // amount added or removed from encrypted funds, when changed
 }
 
 async fn trace_single_account(
     table: &elgamal::BabyStepGiantStep<id::constants::ArCurve>,
     db: &DatabaseClient,
-    input: &RetrievalInput,
-    writer: &mut impl std::io::Write,
+    input: &RetrievalInput
 ) -> anyhow::Result<()> {
-    let csv_writer = csv::Writer::from_writer(writer); // todo move up
     let traced_account = input.account_address;
-
+    let mut file = Path::new(&traced_account.to_string()).to_path_buf(); // todo should we add them to a directory? (Possibly specified by user)
+    file.set_extension("csv");
+    let mut writer = csv::Writer::from_writer(std::fs::File::create(file).expect("Cannot create output file"));
     let rows = db
         .query_account(&traced_account, 10000, QueryOrder::Ascending {
             start: None,
         })
         .await?; // todo which limit should be used?
     println!("Tracing: {}.", traced_account);
-    rows.fold(Ok(csv_writer), |writer, entry| async {
+    writer = rows.fold(Ok(writer), |writer, entry| async {
         let mut wtr = writer?;
         let timestamp = entry.block_time;
         match entry.summary {
@@ -234,48 +229,79 @@ async fn trace_single_account(
                         } else {
                             None
                         };
+                        let get_ecrypted_transfer_delta = |added: &NewEncryptedAmountEvent, removed: &EncryptedAmountRemovedEvent| -> Option<AmountDelta>{
+                                if let Some(key) = &input.encryption_secret_key {
+                                    if sender == traced_account {
+                                        let before = encrypted_transfers::decrypt_amount(
+                                            table,
+                                            key,
+                                            &removed.input_amount,
+                                        );
+                                        let after = encrypted_transfers::decrypt_amount(
+                                            table,
+                                            key,
+                                            &removed.new_amount,
+                                        );
+                                        assert!(before >= after);
+                                        Some(AmountDelta::NegativeAmount(Amount::from(
+                                            before.microgtu - after.microgtu,
+                                        )))
+                                    } else {
+                                        let amount_received = encrypted_transfers::decrypt_amount(
+                                            table,
+                                            key,
+                                            &added.encrypted_amount,
+                                        );
+                                        Some(AmountDelta::PositiveAmount(amount_received))
+                                    }
+                                } else {
+                                    None
+                                }
+                        };
                         match &at.effects {
                             AccountTransactionEffects::None {
                                 transaction_type, ..
                             } => match transaction_type {
                                 None => {
                                     let output = CsvRow {
-                                        timestamp,
+                                        time: pretty_time(timestamp),
                                         transaction_type: "Unknown".to_string(),
                                         sender: Some(sender),
                                         receiver: None,
                                         cost,
                                         reward: None,
-                                        added_to_traced_account: None,
-                                        total: if let Some(cost) = cost {
+                                        summed_transfers: None,
+                                        public_total: if let Some(cost) = cost {
                                             AmountDelta::NegativeAmount(cost)
                                         } else {
                                             AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                         },
+                                        encrypted_total: None,
                                     };
                                     wtr.serialize(output)?;
                                 }
                                 Some(transaction_type) => {
                                     let output = CsvRow {
-                                        timestamp,
+                                        time: pretty_time(timestamp),
                                         transaction_type: serde_json::to_string(&transaction_type)?,
                                         sender: Some(sender),
                                         receiver: None,
                                         cost,
                                         reward: None,
-                                        added_to_traced_account: None,
-                                        total: if let Some(cost) = cost {
+                                        summed_transfers: None,
+                                        public_total: if let Some(cost) = cost {
                                             AmountDelta::NegativeAmount(cost)
                                         } else {
                                             AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                         },
+                                        encrypted_total: None,
                                     };
                                     wtr.serialize(&output)?;
                                 }
                             },
                             AccountTransactionEffects::ModuleDeployed { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -283,18 +309,20 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::ContractInitialized { data } => {
+                                // todo this assumes that the effects of contract effects resulting from this does not affect the balances (or that those effects are include in another transaction effect)
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -302,12 +330,13 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: Some(AmountDelta::NegativeAmount(
+                                    summed_transfers: Some(AmountDelta::NegativeAmount(
                                         data.amount,
                                     )),
-                                    total: AmountDelta::NegativeAmount(Amount {
+                                    public_total: AmountDelta::NegativeAmount(Amount {
                                         microgtu: at.cost.microgtu + data.amount.microgtu,
                                     }),
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
@@ -338,7 +367,7 @@ async fn trace_single_account(
                                         }
                                     }
                                 }
-                                let (net, total) = if taken_from_account > added_to_account {
+                                let (net, public_total) = if taken_from_account > added_to_account {
                                     // Money was taken from traced account net and total
                                     (
                                         AmountDelta::NegativeAmount(Amount::from(
@@ -371,7 +400,7 @@ async fn trace_single_account(
                                     )
                                 };
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -379,15 +408,16 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: Some(net),
-                                    total,
+                                    summed_transfers: Some(net),
+                                    public_total,
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::AccountTransfer { amount, to } => {
-                                let (net, total) = if sender == traced_account {
+                                let (net, public_total) = if sender == traced_account {
                                     (
-                                        AmountDelta::NegativeAmount(*amount),
+                                        AmountDelta::NegativeAmount(*amount), // todo handle sender = to
                                         AmountDelta::NegativeAmount(Amount {
                                             microgtu: amount.microgtu + at.cost.microgtu,
                                         }),
@@ -399,7 +429,7 @@ async fn trace_single_account(
                                     )
                                 };
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -407,8 +437,9 @@ async fn trace_single_account(
                                     receiver: Some(*to),
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: Some(net),
-                                    total,
+                                    summed_transfers: Some(net),
+                                    public_total,
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
@@ -417,9 +448,9 @@ async fn trace_single_account(
                                 to,
                                 ..
                             } => {
-                                let (net, total) = if sender == traced_account {
+                                let (net, public_total) = if sender == traced_account {
                                     (
-                                        AmountDelta::NegativeAmount(*amount),
+                                        AmountDelta::NegativeAmount(*amount), // todo handle sender = to
                                         AmountDelta::NegativeAmount(Amount {
                                             microgtu: amount.microgtu + at.cost.microgtu,
                                         }),
@@ -431,7 +462,7 @@ async fn trace_single_account(
                                     )
                                 };
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -439,14 +470,15 @@ async fn trace_single_account(
                                     receiver: Some(*to),
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: Some(net),
-                                    total,
+                                    summed_transfers: Some(net),
+                                    public_total,
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::BakerAdded { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -454,18 +486,19 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::BakerRemoved { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -473,18 +506,19 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::BakerStakeUpdated { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -492,18 +526,19 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::BakerRestakeEarningsUpdated { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -511,18 +546,19 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::BakerKeysUpdated { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -530,12 +566,13 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
@@ -544,66 +581,25 @@ async fn trace_single_account(
                                 added,
                             } => {
                                 let receiver = added.receiver;
-                                if let Some(key) = &input.encryption_secret_key {
-                                    let delta = if sender == traced_account {
-                                        let before = encrypted_transfers::decrypt_amount(
-                                            table,
-                                            key,
-                                            &removed.input_amount,
-                                        );
-                                        let after = encrypted_transfers::decrypt_amount(
-                                            table,
-                                            key,
-                                            &removed.new_amount,
-                                        );
-                                        assert!(before >= after);
-                                        AmountDelta::NegativeAmount(Amount::from(
-                                            before.microgtu - after.microgtu,
-                                        ))
+                                let delta = get_ecrypted_transfer_delta(added, removed);
+                                let output = CsvRow {
+                                    time: pretty_time(timestamp),
+                                    transaction_type: serde_json::to_string(
+                                        &at.effects.transaction_type(),
+                                    )?,
+                                    sender: Some(sender),
+                                    receiver: Some(receiver),
+                                    cost,
+                                    reward: None,
+                                    summed_transfers: delta,
+                                    public_total: if let Some(cost) = cost {
+                                        AmountDelta::NegativeAmount(cost)
                                     } else {
-                                        let amount_received = encrypted_transfers::decrypt_amount(
-                                            table,
-                                            key,
-                                            &added.encrypted_amount,
-                                        );
-                                        AmountDelta::PositiveAmount(amount_received)
-                                    };
-                                    let output = CsvRow {
-                                        timestamp,
-                                        transaction_type: serde_json::to_string(
-                                            &at.effects.transaction_type(),
-                                        )?,
-                                        sender: Some(sender),
-                                        receiver: Some(receiver),
-                                        cost,
-                                        reward: None,
-                                        added_to_traced_account: Some(delta),
-                                        total: if let Some(cost) = cost {
-                                            AmountDelta::NegativeAmount(cost)
-                                        } else {
-                                            AmountDelta::PositiveAmount(Amount { microgtu: 0 })
-                                        }, // todo fix total
-                                    };
-                                    wtr.serialize(&output)?;
-                                } else {
-                                    let output = CsvRow {
-                                        timestamp,
-                                        transaction_type: serde_json::to_string(
-                                            &at.effects.transaction_type(),
-                                        )?,
-                                        sender: Some(sender),
-                                        receiver: Some(receiver),
-                                        cost,
-                                        reward: None,
-                                        added_to_traced_account: None,
-                                        total: if let Some(cost) = cost {
-                                            AmountDelta::NegativeAmount(cost)
-                                        } else {
-                                            AmountDelta::PositiveAmount(Amount { microgtu: 0 })
-                                        },
-                                    };
-                                    wtr.serialize(&output)?;
-                                }
+                                        AmountDelta::PositiveAmount(Amount { microgtu: 0 })
+                                    },
+                                    encrypted_total: delta,
+                                };
+                                wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::EncryptedAmountTransferredWithMemo {
                                 added,
@@ -611,73 +607,29 @@ async fn trace_single_account(
                                 ..
                             } => {
                                 let receiver = added.receiver;
-                                if let Some(key) = &input.encryption_secret_key {
-                                    let delta = if sender == traced_account {
-                                        let before = encrypted_transfers::decrypt_amount(
-                                            table,
-                                            key,
-                                            &removed.input_amount,
-                                        );
-                                        let after = encrypted_transfers::decrypt_amount(
-                                            table,
-                                            key,
-                                            &removed.new_amount,
-                                        );
-                                        assert!(before >= after);
-                                        AmountDelta::NegativeAmount(Amount::from(
-                                            before.microgtu - after.microgtu,
-                                        ))
+                                let delta = get_ecrypted_transfer_delta(added, removed);
+                                let output = CsvRow {
+                                    time: pretty_time(timestamp),
+                                    transaction_type: serde_json::to_string(
+                                        &at.effects.transaction_type(),
+                                    )?,
+                                    sender: Some(sender),
+                                    receiver: Some(receiver),
+                                    cost,
+                                    reward: None,
+                                    summed_transfers: delta,
+                                    public_total: if let Some(cost) = cost {
+                                        AmountDelta::NegativeAmount(cost)
                                     } else {
-                                        let amount_received = encrypted_transfers::decrypt_amount(
-                                            table,
-                                            key,
-                                            &added.encrypted_amount,
-                                        );
-                                        AmountDelta::PositiveAmount(amount_received)
-                                    };
-                                    let output = CsvRow {
-                                        timestamp,
-                                        transaction_type: serde_json::to_string(
-                                            &at.effects.transaction_type(),
-                                        )?,
-                                        sender: Some(sender),
-                                        receiver: Some(receiver),
-                                        cost,
-                                        reward: None,
-                                        added_to_traced_account: Some(delta),
-                                        total: if let Some(cost) = cost {
-                                            AmountDelta::NegativeAmount(cost)
-                                        } else {
-                                            AmountDelta::PositiveAmount(Amount { microgtu: 0 })
-                                        }, // todo fix total
-                                    };
-                                    wtr.serialize(&output)?;
-                                } else {
-                                    let output = CsvRow {
-                                        timestamp,
-                                        transaction_type: serde_json::to_string(
-                                            &at.effects.transaction_type(),
-                                        )?,
-                                        sender: Some(sender),
-                                        receiver: Some(receiver),
-                                        cost,
-                                        reward: None,
-                                        added_to_traced_account: None,
-                                        total: if let Some(cost) = cost {
-                                            AmountDelta::NegativeAmount(cost)
-                                        } else {
-                                            AmountDelta::PositiveAmount(Amount { microgtu: 0 })
-                                        },
-                                    };
-                                    wtr.serialize(&output)?;
-                                }
+                                        AmountDelta::PositiveAmount(Amount { microgtu: 0 })
+                                    },
+                                    encrypted_total: delta,
+                                };
+                                wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::TransferredToEncrypted { data } => {
-                                // todo Should I put a decrease in total (and amounts), since this
-                                // much less money is now in the
-                                // public balance?
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -685,18 +637,20 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
-                                        AmountDelta::NegativeAmount(cost)
-                                    } else {
-                                        AmountDelta::PositiveAmount(Amount { microgtu: 0 })
-                                    },
+                                    summed_transfers: None,
+                                    public_total: AmountDelta::NegativeAmount(Amount{microgtu: at.cost.microgtu + data.amount.microgtu}),
+                                    encrypted_total: Some(AmountDelta::PositiveAmount(data.amount)),
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::TransferredToPublic { amount, .. } => {
+                                let public_total_increase = if amount.microgtu >= at.cost.microgtu {
+                                    AmountDelta::PositiveAmount(Amount{microgtu: amount.microgtu - at.cost.microgtu})
+                                } else {
+                                    AmountDelta::NegativeAmount(Amount{microgtu: at.cost.microgtu - amount.microgtu})
+                                };
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -704,24 +658,18 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
-                                        AmountDelta::NegativeAmount(cost)
-                                    } else {
-                                        AmountDelta::PositiveAmount(Amount { microgtu: 0 })
-                                    },
+                                    summed_transfers: None,
+                                    public_total: public_total_increase,
+                                    encrypted_total: Some(AmountDelta::NegativeAmount(*amount)),
                                 };
                                 wtr.serialize(&output)?;
-                                // todo should I put an increase in total (and
-                                // amounts), since this much extra money is
-                                // now in the public balance?
                             }
                             AccountTransactionEffects::TransferredWithSchedule { to, amount } => {
                                 let mut combined_amount = 0;
                                 for (_, am) in amount {
                                     combined_amount += am.microgtu;
                                 }
-                                let (net_amount, total) = if sender == traced_account {
+                                let (net_amount, public_total) = if sender == traced_account {
                                     // Traced account pays all scheduled amounts + the cost
                                     (
                                         AmountDelta::NegativeAmount(Amount::from(combined_amount)),
@@ -737,7 +685,7 @@ async fn trace_single_account(
                                     )
                                 };
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -745,8 +693,9 @@ async fn trace_single_account(
                                     receiver: Some(*to),
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: Some(net_amount),
-                                    total,
+                                    summed_transfers: Some(net_amount), // todo handle sender = to
+                                    public_total,
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
@@ -759,7 +708,7 @@ async fn trace_single_account(
                                 for (_, am) in amount {
                                     combined_amount += am.microgtu;
                                 }
-                                let (net_amount, total) = if sender == traced_account {
+                                let (net_amount, public_total) = if sender == traced_account {
                                     // Traced account pays all scheduled amounts + the cost
                                     (
                                         AmountDelta::NegativeAmount(Amount::from(combined_amount)),
@@ -774,7 +723,7 @@ async fn trace_single_account(
                                     )
                                 };
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -782,14 +731,15 @@ async fn trace_single_account(
                                     receiver: Some(*to),
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: Some(net_amount),
-                                    total,
+                                    summed_transfers: Some(net_amount), // todo handle sender = to
+                                    public_total,
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::CredentialKeysUpdated { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -797,18 +747,19 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::CredentialsUpdated { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -816,18 +767,19 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
                             AccountTransactionEffects::DataRegistered { .. } => {
                                 let output = CsvRow {
-                                    timestamp,
+                                    time: pretty_time(timestamp),
                                     transaction_type: serde_json::to_string(
                                         &at.effects.transaction_type(),
                                     )?,
@@ -835,12 +787,13 @@ async fn trace_single_account(
                                     receiver: None,
                                     cost,
                                     reward: None,
-                                    added_to_traced_account: None,
-                                    total: if let Some(cost) = cost {
+                                    summed_transfers: None,
+                                    public_total: if let Some(cost) = cost {
                                         AmountDelta::NegativeAmount(cost)
                                     } else {
                                         AmountDelta::PositiveAmount(Amount { microgtu: 0 })
                                     },
+                                    encrypted_total: None,
                                 };
                                 wtr.serialize(&output)?;
                             }
@@ -862,14 +815,15 @@ async fn trace_single_account(
                         let reward = baker_rewards.get(&traced_account);
                         if let Some(&reward) = reward {
                             let output = CsvRow {
-                                timestamp,
+                                time: pretty_time(timestamp),
                                 transaction_type: "BakerReward".to_string(),
                                 sender: None,
                                 receiver: Some(traced_account),
                                 cost: None,
                                 reward: Some(reward),
-                                added_to_traced_account: None,
-                                total: AmountDelta::PositiveAmount(reward),
+                                summed_transfers: None,
+                                public_total: AmountDelta::PositiveAmount(reward),
+                                encrypted_total: None,
                             };
                             wtr.serialize(output)?;
                         }
@@ -884,14 +838,15 @@ async fn trace_single_account(
                         let reward = finalization_rewards.get(&traced_account);
                         if let Some(&reward) = reward {
                             let output = CsvRow {
-                                timestamp,
+                                time: pretty_time(timestamp),
                                 transaction_type: "FinalizationReward".to_string(),
                                 sender: None,
                                 receiver: Some(traced_account),
                                 cost: None,
                                 reward: Some(reward),
-                                added_to_traced_account: None,
-                                total: AmountDelta::PositiveAmount(reward),
+                                summed_transfers: None,
+                                public_total: AmountDelta::PositiveAmount(reward),
+                                encrypted_total: None,
                             };
                             wtr.serialize(output)?;
                         }
@@ -899,14 +854,15 @@ async fn trace_single_account(
                     SpecialTransactionOutcome::BlockReward { baker_reward, .. } => {
                         // The reward for baking a block
                         let output = CsvRow {
-                            timestamp,
+                            time: pretty_time(timestamp),
                             transaction_type: "BlockReward".to_string(),
                             sender: None,
                             receiver: Some(traced_account),
                             cost: None,
                             reward: Some(baker_reward),
-                            added_to_traced_account: None,
-                            total: AmountDelta::PositiveAmount(baker_reward),
+                            summed_transfers: None,
+                            public_total: AmountDelta::PositiveAmount(baker_reward),
+                            encrypted_total: None,
                         };
                         wtr.serialize(output)?;
                     }
@@ -916,12 +872,12 @@ async fn trace_single_account(
         Ok::<_, std::io::Error>(wtr) // Explicit error type allows use of ?
     })
     .await?;
-
+    writer.flush()?;
     Ok(())
 }
 
 fn pretty_time(timestamp: Timestamp) -> String {
-    let naive = NaiveDateTime::from_timestamp(timestamp.millis as i64, 0);
+    let naive = NaiveDateTime::from_timestamp(timestamp.millis as i64 / 1000, 0); // todo display subsecond part?
     let dt: DateTime<Utc> = DateTime::from_utc(naive, Utc);
     dt.format("UTC %Y-%m-%d %H:%M:%S").to_string()
 }
