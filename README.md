@@ -12,3 +12,4 @@ The following examples are available.
 
 - [id-library-showcase](./id-library-showcase/) demonstrates how to use the identity layer off-chain to prove properties of the account holder, or prove ownership of accounts on the chain.
 - [memo-via-smart-contract](./memo-via-smart-contract/) demonstrates how to achieve a memo feature via an intermediate smart contract.
+- [nft-client](./nft-client/) demonstrates how to integrate with smart contract, observe the contract event logs and call contract functions.
