@@ -146,9 +146,14 @@ async fn main() {
                     return;
                 }
             };
-            for input in inputs.iter() {
-                trace_single_account(&table, &db, input).await;
-                // todo start them async
+            let futures = inputs
+                .iter()
+                .map(|input| trace_single_account(&table, &db, input));
+            for res in futures {
+                match res.await {
+                    Ok(()) => (),
+                    Err(e) => panic!("Tracing failed: {}", e),
+                };
             }
         }
         Mode::Single {
