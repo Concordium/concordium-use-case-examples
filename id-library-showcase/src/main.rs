@@ -261,7 +261,7 @@ struct RevealAttribute {
     attribute: Option<ExampleAttribute>,
     #[structopt(
         long = "randomness",
-        help = "Path to file containing randomness used to produce to commitment.",
+        help = "Path to file containing randomness used to produce the commitment.",
         required_unless = "wallet",
         conflicts_with = "wallet"
     )]
