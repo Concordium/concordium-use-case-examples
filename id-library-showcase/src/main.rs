@@ -1,15 +1,14 @@
 use std::path::PathBuf;
 
 use clap::AppSettings;
-use concordium_rust_sdk::endpoints;
-use crypto_common::{types::CredentialIndex, SerdeDeserialize, SerdeSerialize};
-use id::{id_prover::*, id_verifier::*, types::*, constants::AttributeKind};
-
-use pedersen_scheme::Randomness as PedersenRandomness;
-use structopt::StructOpt;
-
-use bulletproofs::range_proof::RangeProof;
-use curve_arithmetic::*;
+use concordium_rust_sdk::{
+    common::{encryption, types::CredentialIndex, SerdeDeserialize, SerdeSerialize},
+    endpoints,
+    id::{
+        constants::AttributeKind, curve_arithmetic::*, id_prover::*, id_verifier::*,
+        pedersen_commitment::Randomness as PedersenRandomness, range_proof::RangeProof, types::*,
+    },
+};
 use pairing::bls12_381::Bls12;
 use rand::*;
 use serde::de::DeserializeOwned;
@@ -22,63 +21,58 @@ use std::{
     marker::PhantomData,
     path::Path,
 };
+use structopt::StructOpt;
 
-use dialoguer::Input;
 use anyhow::Context;
+use dialoguer::Input;
 pub type ExampleCurve = <Bls12 as Pairing>::G1;
 
-pub type ExampleAttribute = AttributeKind;
-
-
+/// We provide the following examples for proving statements about the identity
+/// behind an account:
+/// - reveal an attribute
+/// - prove that an attribute is in a range of the form [a, b)
+/// - prove ownership of an account
+///
+/// For the first two, the randomness of the on-chain commitments are needed.
+/// For the latter, the the private keys of credential holder are needed.
+///
+/// In the examples, it is possible to pass in randomness and private keys
+/// directly when making proofs, but it is also supported to pass in a mobile
+/// wallet export. It contains both the mentioned randomness and private keys.
+///
+/// A decrypted mobile wallet export is a JSON file, so below we define a
+/// `Wallet` that can be parsed from such JSON. We only parse the JSON fields
+/// needed in order to get the randomness and the private keys.
 #[derive(SerdeSerialize, SerdeDeserialize)]
-#[serde(bound(serialize = "C: Curve", deserialize = "C: Curve"))]
-struct ImportedAccount<C: Curve>{
-    address: AccountAddress,
-    #[serde(rename = "commitmentsRandomness")]
-    commitments_randomness: Option<CommitmentsRandomness<C>>,
-    #[serde(rename = "accountKeys")]
-    account_keys: AccountKeys,
-
-}
-
-#[derive(Clone, SerdeSerialize, SerdeDeserialize)]
-#[serde(bound(
-    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
-    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
-))]
-struct Attributes<C:Curve, AttributeType: Attribute<C::Scalar>> {
-    #[serde(rename = "attributeList")]
-    attribute_list: AttributeList<C::Scalar, AttributeType>,
-}
-
-#[derive(SerdeSerialize, SerdeDeserialize)]
-#[serde(bound(
-    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
-    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
-))]
-struct ImportedIdentity<C: Curve, AttributeType: Attribute<C::Scalar>> {
-    accounts: Vec<ImportedAccount<C>>,
-    #[serde(rename = "identityObject")]
-    identity_object: Attributes<C, AttributeType>
+#[serde(rename_all = "camelCase")]
+struct ImportedAccount {
+    address:                AccountAddress,
+    commitments_randomness: Option<CommitmentsRandomness<ExampleCurve>>,
+    account_keys:           AccountKeys,
 }
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
-#[serde(bound(
-    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
-    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
-))]
-struct ImportedIdentities<C: Curve, AttributeType: Attribute<C::Scalar>> {
-    identities: Vec<ImportedIdentity<C, AttributeType>>
+#[serde(rename_all = "camelCase")]
+struct ImportedIdentity {
+    accounts:        Vec<ImportedAccount>,
+    identity_object: IdentityObject<Bls12, ExampleCurve, AttributeKind>,
 }
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
-#[serde(bound(
-    serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
-    deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
-))]
-struct Wallet<C:Curve, AttributeType: Attribute<C::Scalar>>{
-    value: ImportedIdentities<C, AttributeType>
+struct ImportedIdentities {
+    identities: Vec<ImportedIdentity>,
 }
+
+#[derive(SerdeSerialize, SerdeDeserialize)]
+struct Wallet {
+    value: ImportedIdentities,
+}
+
+/// We define a type `Claim` representing all kinds of statements that the user
+/// can prove, so far the three statements above. A claim indicates what the
+/// user claims that it can proof. Claims can contain proofs, if they can be
+/// verified right away without further interaction with verifier, while it
+/// might require interaction with the verifier to prove other claims.
 
 #[derive(SerdeSerialize, SerdeDeserialize)]
 #[serde(bound(
@@ -87,18 +81,18 @@ struct Wallet<C:Curve, AttributeType: Attribute<C::Scalar>>{
 ))]
 #[serde(tag = "type")]
 pub enum Claim<C: Curve, AttributeType: Attribute<C::Scalar>> {
+    #[serde(rename_all = "camelCase")]
     AttributeOpening {
-        #[serde(rename = "attributeTag")]
         attribute_tag: AttributeTag,
-        attribute: AttributeType,
-        proof: PedersenRandomness<C>,
+        attribute:     AttributeType,
+        proof:         PedersenRandomness<C>,
     },
+    #[serde(rename_all = "camelCase")]
     AttributeInRange {
-        #[serde(rename = "attributeTag")]
         attribute_tag: AttributeTag,
-        lower: AttributeType,
-        upper: AttributeType,
-        proof: RangeProof<C>,
+        lower:         AttributeType,
+        upper:         AttributeType,
+        proof:         RangeProof<C>,
     },
     AccountOwnership {
         #[serde(skip)]
@@ -106,15 +100,17 @@ pub enum Claim<C: Curve, AttributeType: Attribute<C::Scalar>> {
     },
 }
 
+/// This type is for specifying which credential holder and which account a
+/// claim is about.
 #[derive(SerdeSerialize, SerdeDeserialize)]
 #[serde(bound(
     serialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeSerialize",
     deserialize = "C: Curve, AttributeType: Attribute<C::Scalar> + SerdeDeserialize<'de>"
 ))]
 struct ClaimAboutAccount<C: Curve, AttributeType: Attribute<C::Scalar>> {
-    account: AccountAddress,
+    account:          AccountAddress,
     credential_index: CredentialIndex,
-    claim: Claim<C, AttributeType>,
+    claim:            Claim<C, AttributeType>,
 }
 
 fn write_json_to_file<P: AsRef<Path>, T: SerdeSerialize>(filepath: P, v: &T) -> io::Result<()> {
@@ -124,8 +120,7 @@ fn write_json_to_file<P: AsRef<Path>, T: SerdeSerialize>(filepath: P, v: &T) -> 
 fn read_json_from_file<P, T>(path: P) -> io::Result<T>
 where
     P: AsRef<Path> + Debug,
-    T: DeserializeOwned,
-{
+    T: DeserializeOwned, {
     let file = File::open(path)?;
 
     let reader = BufReader::new(file);
@@ -133,6 +128,8 @@ where
     Ok(u)
 }
 
+/// The commands for proving the statements above and one command for verifying
+/// any of them.
 #[derive(StructOpt)]
 enum IdClient {
     #[structopt(name = "prove-ownership", about = "Prove ownership of an account.")]
@@ -156,6 +153,9 @@ enum IdClient {
     ClaimAccountOwnership(ClaimAccountOwnership),
 }
 
+/// Command for proving ownership of an account. It is an interactive proof and
+/// needs a challenge from the verifier. The private keys of the credential
+/// holder can either be parsed in directly or read from a mobile wallet export.
 #[derive(StructOpt)]
 struct ProveOwnership {
     #[structopt(
@@ -164,14 +164,14 @@ struct ProveOwnership {
         required_unless = "wallet",
         conflicts_with = "wallet"
     )]
-    private_keys: Option<PathBuf>,
+    private_keys:     Option<PathBuf>,
     #[structopt(
         long = "wallet",
         help = "Path to file mobile wallet export.",
         required_unless = "private-keys",
         conflicts_with = "private-keys"
     )]
-    wallet: Option<PathBuf>,
+    wallet:           Option<PathBuf>,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account.",
@@ -180,17 +180,19 @@ struct ProveOwnership {
     )]
     credential_index: Option<CredentialIndex>,
     #[structopt(long = "account", help = "Account address-")]
-    account: AccountAddress,
+    account:          AccountAddress,
     #[structopt(long = "challenge", help = "File containing verifier's challenge.")]
-    challenge: PathBuf,
+    challenge:        PathBuf,
     #[structopt(long = "out", help = "Path to output the proof to.")]
-    out: PathBuf,
+    out:              PathBuf,
 }
 
+/// Command for proving that an attribute is in a range. The randomness can be
+/// parsed in directly or read from a mobile wallet export.
 #[derive(StructOpt)]
 struct ProveAttributeInRange {
     #[structopt(long = "account", help = "The prover's account address.")]
-    account: AccountAddress,
+    account:          AccountAddress,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account."
@@ -200,48 +202,50 @@ struct ProveAttributeInRange {
         long = "attribute-tag",
         help = "The attribute tag claimed to contain the value inside the commitment."
     )]
-    attribute_tag: AttributeTag,
+    attribute_tag:    AttributeTag,
     #[structopt(
         long = "attribute",
         help = "The attribute value inside the commitment.",
         required_unless = "wallet",
         conflicts_with = "wallet"
     )]
-    attribute: Option<ExampleAttribute>,
+    attribute:        Option<AttributeKind>,
     #[structopt(
         long = "upper",
         help = "The upper bound of the value inside the commitment."
     )]
-    upper: ExampleAttribute,
+    upper:            AttributeKind,
     #[structopt(
         long = "lower",
         help = "The lower bound of the value inside the commitment."
     )]
-    lower: ExampleAttribute,
+    lower:            AttributeKind,
     #[structopt(
         long = "randomness",
         help = "Path to file containing randomness used to produce to commitment.",
         required_unless = "wallet",
         conflicts_with = "wallet"
     )]
-    randomness: Option<PathBuf>,
+    randomness:       Option<PathBuf>,
     #[structopt(
         long = "wallet",
         help = "Path to file mobile wallet export.",
         required_unless = "randomness",
         conflicts_with = "randomness"
     )]
-    wallet: Option<PathBuf>,
+    wallet:           Option<PathBuf>,
     #[structopt(long = "proof-out", help = "Path to output proof to.")]
-    out: PathBuf,
-    #[structopt(long = "grpc")]
-    endpoint: endpoints::Endpoint,
+    out:              PathBuf,
+    #[structopt(long = "node")]
+    endpoint:         endpoints::Endpoint,
 }
 
+/// Command for revealing an attribute. The randomness can be parsed in
+/// directly or read from a mobile wallet export.
 #[derive(StructOpt)]
 struct RevealAttribute {
     #[structopt(long = "account", help = "The prover's account address.")]
-    account: AccountAddress,
+    account:          AccountAddress,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account."
@@ -251,51 +255,53 @@ struct RevealAttribute {
         long = "attribute-tag",
         help = "The attribute tag claimed to contain the value inside the commitment."
     )]
-    attribute_tag: AttributeTag,
+    attribute_tag:    AttributeTag,
     #[structopt(
         long = "attribute",
         help = "The attribute value inside the commitment.",
         required_unless = "wallet",
         conflicts_with = "wallet"
     )]
-    attribute: Option<ExampleAttribute>,
+    attribute:        Option<AttributeKind>,
     #[structopt(
         long = "randomness",
         help = "Path to file containing randomness used to produce to commitment.",
         required_unless = "wallet",
         conflicts_with = "wallet"
     )]
-    randomness: Option<PathBuf>,
+    randomness:       Option<PathBuf>,
     #[structopt(
         long = "wallet",
         help = "Path to file mobile wallet export.",
         required_unless = "randomness",
         conflicts_with = "randomness"
     )]
-    wallet: Option<PathBuf>,
+    wallet:           Option<PathBuf>,
     #[structopt(long = "proof-out", help = "Path to output proof to.")]
-    out: PathBuf,
+    out:              PathBuf,
 }
 
+/// Command for claiming ownership of an account.
 #[derive(StructOpt)]
 struct ClaimAccountOwnership {
     #[structopt(long = "account", help = "The prover's account address.")]
-    account: AccountAddress,
+    account:          AccountAddress,
     #[structopt(
         long = "credential-index",
         help = "The credential index of the relevant credential on the account."
     )]
     credential_index: CredentialIndex,
     #[structopt(long = "claim-out", help = "Path to output claim to.")]
-    out: PathBuf,
+    out:              PathBuf,
 }
 
+/// Command for veryfying claims.
 #[derive(StructOpt)]
 struct VerifyClaim {
-    #[structopt(long = "grpc")]
+    #[structopt(long = "node")]
     endpoint: endpoints::Endpoint,
     #[structopt(long = "claim", help = "The path to a file containing a claim.")]
-    claim: PathBuf,
+    claim:    PathBuf,
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -307,17 +313,17 @@ async fn main() -> anyhow::Result<()> {
     let client = IdClient::from_clap(&matches);
     use IdClient::*;
     match client {
-        ProveOwnership(po) => handle_prove_ownership(po),
+        ProveOwnership(po) => handle_prove_ownership(po)?,
         VerifyClaim(vc) => handle_verify_claim(*vc).await?,
         ProveAttributeInRange(pair) => handle_prove_attribute_in_range(*pair).await?,
-        RevealAttribute(ra) => handle_reveal_attribute(ra),
-        ClaimAccountOwnership(cao) => handle_claim_ownership(cao),
+        RevealAttribute(ra) => handle_reveal_attribute(ra)?,
+        ClaimAccountOwnership(cao) => handle_claim_ownership(cao)?,
     }
     Ok(())
 }
 
 async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
-    let claim_about_account: ClaimAboutAccount<ExampleCurve, ExampleAttribute> =
+    let claim_about_account: ClaimAboutAccount<ExampleCurve, AttributeKind> =
         read_json_from_file(vc.claim)?;
     let mut client = endpoints::Client::connect(vc.endpoint, "rpcadmin".to_string()).await?;
     let consensus_info = client.get_consensus_status().await?;
@@ -329,11 +335,11 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
             &claim_about_account.account,
             &consensus_info.last_finalized_block,
         )
-        .await?;
+        .await?; // Read account info from chain.
     let credential = acc_info
         .account_credentials
         .get(&claim_about_account.credential_index)
-        .expect("No credential on account with given index");
+        .expect("No credential on account with given index"); // Read the relevant credential from chain that the claim is about.
     use AccountCredentialWithoutProofs::*;
     let (maybe_commitments, public_keys) = match &credential.value {
         Initial { icdv, .. } => (None, &icdv.cred_account), // This should never happen
@@ -345,6 +351,8 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
             attribute,
             proof,
         } => {
+            // If the user claims that the value inside the on-chain commitment is
+            // `attribute`, check that provided proof.
             let maybe_commitment = match maybe_commitments {
                 Some(commitments) => commitments.cmm_attributes.get(&attribute_tag),
                 _ => None,
@@ -370,6 +378,8 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
             upper,
             proof,
         } => {
+            // If the user claims that the value inside the on-chain commitment is in the
+            // range [lower, upper), check that provided proof.
             let maybe_commitment = match maybe_commitments {
                 Some(commitments) => commitments.cmm_attributes.get(&attribute_tag),
                 _ => None,
@@ -392,11 +402,16 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
             }
         }
         Claim::AccountOwnership { .. } => {
+            // If the user claims to own the account, give the user a challenge and wait for
+            // a proof.
             let mut challenge = [0u8; 32];
             rand::thread_rng().fill(&mut challenge[..]);
             let challenge_path = "ownership-challenge.json";
             write_json_to_file(&challenge_path, &challenge)?;
-            println!("Wrote challenge to file. Give challenge to prover.");
+            println!(
+                "Wrote challenge to file {}. Give challenge to prover.",
+                challenge_path
+            );
 
             let path_to_proof: Option<PathBuf> = {
                 let validator = |candidate: &String| -> Result<(), String> {
@@ -423,6 +438,7 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
                 }
             };
             if let Some(path) = path_to_proof {
+                // Check the proof that the user came back with.
                 let proof: AccountOwnershipProof = read_json_from_file(path)?;
                 let b = verify_account_ownership(
                     &public_keys,
@@ -440,6 +456,31 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn read_attribute_and_randomness(
+    account: AccountAddress,
+    attribute_tag: AttributeTag,
+    maybe_attribute: Option<AttributeKind>,
+    maybe_randomness: Option<PathBuf>,
+    maybe_wallet: Option<PathBuf>,
+) -> anyhow::Result<(AttributeKind, PedersenRandomness<ExampleCurve>)> {
+    match (maybe_attribute, maybe_randomness, maybe_wallet) {
+        (Some(attribute), Some(randomness_file), _) => Ok((
+            attribute,
+            read_json_from_file(randomness_file)
+                .context("Could not parse file with randomness.")?,
+        )),
+        (_, _, Some(wallet_file)) => {
+            // Otherwise, use an exported mobile wallet.
+            let wallet = decrypt_wallet(wallet_file)?;
+            read_attribute_and_randomness_from_wallet(account, attribute_tag, wallet)
+                .context("Could not parse wallet file.")
+        }
+        (_, _, _) => anyhow::bail!("Attribute and randomness, or wallet is needed."),
+    }
+}
+
+/// Prove that an attribute on an account is in a range using provided
+/// randomness (either directly or from wallet export).
 async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow::Result<()> {
     let account = pair.account;
     let attribute_tag = pair.attribute_tag;
@@ -447,34 +488,16 @@ async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow:
     let consensus_info = client.get_consensus_status().await?;
     let global_ctx = client
         .get_cryptographic_parameters(&consensus_info.last_finalized_block)
-        .await?;
-    // let randomness: PedersenRandomness<ExampleCurve> = read_json_from_file(pair.randomness)?;
-    let (attribute, randomness): (AttributeKind, PedersenRandomness<ExampleCurve>) =
-        match (pair.attribute, pair.randomness, pair.wallet) {
-            (Some(attribute), Some(randomness_file), _) => 
-            match read_json_from_file(randomness_file) {
-                Ok(r) => (attribute, r),
-                Err(e) => {
-                    anyhow::bail!("Could not parse randomness: {}. Terminating.", e)
-                }
-            },
-            (_, _, Some(wallet_file)) => {
-                match decrypt_wallet(wallet_file){
-                    Ok(wallet) => {
-                        match read_attribute_and_randomness_from_wallet(account, attribute_tag, wallet) {
-                            Ok(x) => x,
-                            Err(e) => {
-                                anyhow::bail!("Could not parse wallet: {} Terminating.", e);
-                            }
-                        }
-                    },
-                    Err(e) => {
-                       anyhow::bail!("Error: {}", e);
-                    }
-                }
-            },
-            (_, _, _) => anyhow::bail!("Attribute and randomness, or wallet is needed."),
-        };
+        .await?; // Read cryptographic parameters from chain that are needed for range proofs.
+                 // Read attribute randomness directly, if they are provided, or from mobile
+                 // wallet export.
+    let (attribute, randomness) = read_attribute_and_randomness(
+        account,
+        attribute_tag,
+        pair.attribute,
+        pair.randomness,
+        pair.wallet,
+    )?;
     let proof = prove_attribute_in_range(
         &global_ctx.bulletproof_generators(),
         &global_ctx.on_chain_commitment_key,
@@ -495,174 +518,151 @@ async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow:
             },
         };
         write_json_to_file(&pair.out, &claim)?;
+        println!("Wrote claim with proof to {:?}.", pair.out);
+    } else {
+        anyhow::bail!("Could not produce proof.");
     }
     Ok(())
 }
 
-fn read_attribute_and_randomness_from_wallet(account: AccountAddress, tag: AttributeTag, wallet: Wallet<ExampleCurve, ExampleAttribute>) -> Result<(AttributeKind, PedersenRandomness<ExampleCurve>), String> {
-    let maybe_randomness : Option<(Attributes<ExampleCurve, ExampleAttribute>, CommitmentsRandomness<ExampleCurve>)> = {
+fn read_attribute_and_randomness_from_wallet(
+    account: AccountAddress,
+    tag: AttributeTag,
+    wallet: Wallet,
+) -> anyhow::Result<(AttributeKind, PedersenRandomness<ExampleCurve>)> {
+    let maybe_randomness: Option<(
+        IdentityObject<Bls12, ExampleCurve, AttributeKind>,
+        CommitmentsRandomness<ExampleCurve>,
+    )> = {
         let mut found = None;
+        // Look for given account in the wallet. If it exists,
+        // remember the identity and the randomness.
         for identity in wallet.value.identities {
             if let Some(acc) = identity.accounts.into_iter().find(|x| x.address == account) {
                 if let Some(rand) = acc.commitments_randomness {
                     found = Some((identity.identity_object, rand));
                 } else {
-                    return Err(format!("Randomness for account {} not found in wallet import.", account));
+                    anyhow::bail!(
+                        "Randomness for account {} not found in wallet import.",
+                        account
+                    );
                 }
                 break;
             }
         }
         found
     };
-    let (attribute, randomness) = match maybe_randomness {
-        Some((id,rand)) => {
-            match (id.attribute_list.alist.get(&tag), rand.attributes_rand.get(&tag)) {
-                (Some(a), Some(r)) => (a.clone(), r.clone()),
-                (_, _) => {return Err(format!("Attribute randomness {} not found on account {} in wallet import.", tag, account));}
-            }
-        },
-        None => {return Err(format!("Account {} not found in wallet.", account));}
-    };
-    Ok((attribute, randomness))
+    let (id, rand) =
+        maybe_randomness.context(format!("Account {} not found in wallet.", account))?;
+    // Look up the attribute from the identity found above.
+    let attribute = id.alist.alist.get(&tag).context(format!(
+        "No attribute with tag {} found on account {} in wallet.",
+        tag, account
+    ))?;
+    // Look up the concrete randomness for the given attribute tag in the randomness
+    // found above.
+    let randomness = rand.attributes_rand.get(&tag).context(format!(
+        "Attribute randomness for attribute {} not found on account {} in wallet.",
+        tag, account
+    ))?;
+    Ok((attribute.clone(), randomness.clone()))
 }
 
-fn read_account_keys_from_wallet(account: AccountAddress, wallet: &Wallet<ExampleCurve, ExampleAttribute>) -> Result<&AccountKeys, String> {
+fn read_account_keys_from_wallet(
+    account: AccountAddress,
+    wallet: &Wallet,
+) -> anyhow::Result<&AccountKeys> {
+    // Look for the given account in the wallet, and if it exists, return the keys.
     for identity in wallet.value.identities.iter() {
         if let Some(acc) = identity.accounts.iter().find(|x| x.address == account) {
             return Ok(&acc.account_keys);
         }
     }
-    Err(format!("Account {} not found in wallet.", account))
+    anyhow::bail!("Account {} not found in wallet.", account)
 }
 
-fn decrypt_wallet(file : PathBuf) -> anyhow::Result<Wallet<ExampleCurve, ExampleAttribute>> {
+/// Function for decrypting the mobile wallet export file. Same password as
+/// chosen when exporting in the mobile wallet.
+fn decrypt_wallet(file: PathBuf) -> anyhow::Result<Wallet> {
     let data = std::fs::read(&file).context("Cannot read wallet input file.")?;
     let parsed_data = serde_json::from_slice(&data)?;
     let pass = rpassword::read_password_from_tty(Some("Enter password to decrypt with: "))?;
-    let plaintext = match crypto_common::encryption::decrypt(&pass.into(), &parsed_data) {
-        Ok(pt) => pt,
-        Err(_) => anyhow::bail!("Could not decrypt."),
-    };
-    match serde_json::from_slice(&plaintext) {
-        Ok(wallet) => Ok(wallet),
-        Err(e) => anyhow::bail!("Could not parse wallet: {}.",e)
-    }
+    let plaintext =
+        encryption::decrypt(&pass.into(), &parsed_data).context("Could not decrypt wallet.")?;
+    serde_json::from_slice(&plaintext).context("Could not parse decrypted wallet.")
 }
 
-fn handle_reveal_attribute(ra: RevealAttribute) {
+/// Reveal an attribute on an account using provided randomness (either directly
+/// or from wallet export).
+fn handle_reveal_attribute(ra: RevealAttribute) -> anyhow::Result<()> {
     let account = ra.account;
-    let tag = ra.attribute_tag;
-    let (attribute, randomness): (AttributeKind, PedersenRandomness<ExampleCurve>) =
-        match (ra.attribute, ra.randomness, ra.wallet) {
-            (Some(attribute), Some(randomness_file), _) => match read_json_from_file(randomness_file) {
-                Ok(r) => (attribute, r),
-                Err(e) => {
-                    eprintln!("Could not parse randomness: {}. Terminating.", e);
-                    return;
-                }
-            },
-            (_, _, Some(wallet_file)) => {
-                match decrypt_wallet(wallet_file){
-                    Ok(wallet) => {
-                        match read_attribute_and_randomness_from_wallet(account, tag, wallet) {
-                            Ok(x) => x,
-                            Err(e) => {
-                                eprintln!("Could not parse wallet: {} Terminating.", e);
-                                return;
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return;
-                    }
-                }
-            },
-            (_, _, _) => panic!("Attribute and randomness, or wallet is needed."),
-        };
+    let attribute_tag = ra.attribute_tag;
+    let (attribute, randomness) = read_attribute_and_randomness(
+        account,
+        attribute_tag,
+        ra.attribute,
+        ra.randomness,
+        ra.wallet,
+    )?;
     let proof = randomness;
     let claim = ClaimAboutAccount {
         account,
         credential_index: ra.credential_index,
         claim: Claim::AttributeOpening {
-            attribute_tag: ra.attribute_tag,
+            attribute_tag,
             attribute,
             proof,
         },
     };
-    if let Err(e) = write_json_to_file(&ra.out, &claim) {
-        eprintln!("Could not output claim with proof: {}", e);
-        return;
-    }
+    write_json_to_file(&ra.out, &claim).context("Could not output claim with proof.")?;
+    println!("Wrote claim with proof to {:?}.", ra.out);
+    Ok(())
 }
 
-fn handle_claim_ownership(cao: ClaimAccountOwnership) {
+/// Claim ownership of an account. Contains no proof.
+fn handle_claim_ownership(cao: ClaimAccountOwnership) -> anyhow::Result<()> {
     let claim = ClaimAboutAccount {
-        account: cao.account,
+        account:          cao.account,
         credential_index: cao.credential_index,
-        claim: Claim::<ExampleCurve, ExampleAttribute>::AccountOwnership {
+        claim:            Claim::<ExampleCurve, AttributeKind>::AccountOwnership {
             phantom_data: Default::default(),
         },
     };
-    if let Err(e) = write_json_to_file(&cao.out, &claim) {
-        eprintln!("Could not output claim with proof: {}", e);
-        return;
-    }
+    write_json_to_file(&cao.out, &claim).context("Could not output claim.")?;
+    println!("Wrote claim to {:?}.", cao.out);
+    Ok(())
 }
 
-fn handle_prove_ownership(po: ProveOwnership) {
-    let challenge: [u8; 32] = match read_json_from_file(po.challenge) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Could not parse challenge: {}. Terminating.", e);
-            return;
+/// Given a challenge from the verifier, prove ownership of an account using the
+/// private keys of the credential holder, provided either directly or from
+/// wallet export.
+fn handle_prove_ownership(po: ProveOwnership) -> anyhow::Result<()> {
+    let challenge: [u8; 32] =
+        read_json_from_file(po.challenge).context("Could not parse challenge.")?;
+    let proof: AccountOwnershipProof = match (po.private_keys, po.wallet, po.credential_index) {
+        (Some(file), _, _) => {
+            // Use credential keys if they are provided.
+            let cred_data: CredentialData =
+                read_json_from_file(file).context("Could not parse credential data")?;
+            prove_ownership_of_account(&cred_data, po.account, &challenge)
+        }
+        (_, Some(wallet_file), Some(index)) => {
+            // Otherwise, read keys from provided wallet export.
+            let wallet = decrypt_wallet(wallet_file)?;
+            let account_keys = read_account_keys_from_wallet(po.account, &wallet)
+                .context("Could not parse wallet")?;
+            let cred_data = account_keys
+                .keys
+                .get(&index)
+                .context("Provided wallet contains no keys for given credential index.")?;
+            prove_ownership_of_account(cred_data, po.account, &challenge)
+        }
+        (_, _, _) => {
+            anyhow::bail!("No private keys provided.");
         }
     };
-    let proof: AccountOwnershipProof =
-        match (po.private_keys, po.wallet, po.credential_index) {
-            (Some(file), _, _) => {
-                let cred_data : CredentialData = match read_json_from_file(file) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("Could not parse credential data: {}. Terminating.", e);
-                        return;
-                    }
-                };
-                prove_ownership_of_account(&cred_data, po.account, &challenge)
-            },
-            (_, Some(wallet_file), Some(index)) => 
-                match decrypt_wallet(wallet_file){
-                    Ok(wallet) => {
-                        match read_account_keys_from_wallet(po.account, &wallet) {
-                            Ok(x) => {
-                                match x.keys.get(&index) {
-                                    Some(cred_data) => prove_ownership_of_account(cred_data, po.account, &challenge),
-                                    None => {
-                                        eprintln!("Provided wallet contains no keys for given credential index.");
-                                        return;
-                                    }
-                                }
-                            },
-                            Err(e) => {
-                                eprintln!("Could not parse wallet: {} Terminating.", e);
-                                return;
-                            }
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return;
-                    }
-                },
-            (_, _, _) => {
-                eprintln!("No private keys provided.");
-                return;
-            }
-        };
 
-
-    if let Err(e) = write_json_to_file(&po.out, &proof) {
-        eprintln!("Could not output proof: {}", e);
-        return;
-    }
+    write_json_to_file(&po.out, &proof).context("Could not output proof.")?;
+    println!("Wrote proof to {:?}.", po.out);
+    Ok(())
 }

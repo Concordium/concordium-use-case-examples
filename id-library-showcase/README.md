@@ -4,12 +4,15 @@ Here we demonstrate how to prove and verify properties about an identity behind 
 - prove ownership of an account,
 - prove that an attribute is in a range.
 
+## Account key structure
+An account is owned by one or more credential holders. Each credential holder has a `credential index` and its own set of keys used to sign transactions. Each account has a threshold indicating how many of the credential holders owning the account is needed for signing a transaction. The account keys of an account consist of all the keys of all the credential holders. When creating an account, the user creating it will be the only account owner and will always have credential index `0`. When a user - a credential holder of an account - wants to prove or reveal anything about the account, it is always with respect to its own credential index.
+
 ## Reveal attribute
 When creating an account, the user can choose to reveal attributes publicly on chain, such as country of residence, identity document type and more.
 If an attribute is not revealed when creating the account, a commitment of the attribute will instead appear on chain. 
 The user can then choose to reveal an attribute inside one of the on-chain commitments. 
 
-As an example, suppose that a user named `John Doe` has created an identity and a normal account using the Concordium Mobile Wallet, say `3UHUEr3KkFG3pd6Zj3nH7hJfng9dpqwWPfSCuSwarw38diLLmd`. Then he can produce a proof
+As an example, suppose that a user named `John Doe` has created an identity and a normal account (here, a normal account means a non-initial account) using the Concordium Mobile Wallet, say `3UHUEr3KkFG3pd6Zj3nH7hJfng9dpqwWPfSCuSwarw38diLLmd`. Then he can produce a proof
 that the first name of the user is indeed `John` as follows:
 1. Export wallet and place the file in the same directory as the `id-library-showcase` binary. 
 2. Run the command
@@ -37,13 +40,13 @@ indicating that it claims to prove that the credential holder with credential in
 
 The proof can be verified using the command
 ```console
-./id-library-showcase verify-claim --claim reveal.json --grpc http://127.0.0.1:10000
+./id-library-showcase verify-claim --claim reveal.json --node http://127.0.0.1:10000
 Result: true
 ```
 This assumes that the verifier is running a local node at http://127.0.0.1:10000. The `verify-claim` command looks up the relevant on-chain information needed for verifying the proof, which, in this case, is the commitment to the first name that appears on chain. 
 
 ## Prove ownership of account
-The user can prove to someone that it owns an account, or in other words, that the user is a specific credential holder of an account. 
+The user can prove to someone that it is among the owners of an account, or in other words, that the user is a specific credential holder of an account. 
 This is an interactive process between the user and the verifier. The steps are
 1. First, the user claims to be a credential holder of an account by running
     ```console
@@ -62,7 +65,7 @@ This is an interactive process between the user and the verifier. The steps are
     indicating that the user claims to be the credential holder with index `0` of account `3UHUEr3KkFG3pd6Zj3nH7hJfng9dpqwWPfSCuSwarw38diLLmd`.
 2. The verifier runs the command
     ```console
-    ./id-library-showcase verify-claim --claim ownership-claim.json --grpc http://127.0.0.1:10000
+    ./id-library-showcase verify-claim --claim ownership-claim.json --node http://127.0.0.1:10000
     Wrote challenge to file. Give challenge to prover.
     Enter the path to the proof [ownership-proof.json]
     ```
@@ -76,7 +79,7 @@ This is an interactive process between the user and the verifier. The steps are
     This produces the file `ownership-proof.json` with the proof that the user owns the account.
 4. The verifier now presses enter after receiving `ownership-proof.json` from the user. The console should look like
    ```console
-    ./id-library-showcase verify-claim --claim ownership-claim.json --grpc http://127.0.0.1:10000
+    ./id-library-showcase verify-claim --claim ownership-claim.json --node http://127.0.0.1:10000
     Wrote challenge to file. Give challenge to prover.
     Enter the path to the proof: ownership-proof.json
     Result: true
@@ -89,7 +92,7 @@ Similar to revealing an attribute, the user can prove that an attribute lies in 
 It could be that the user's real birthday is 1970/01/01 but only wants to reveal that its birthday lies between 1969/05/01 and 1981/04/17. 
 This can be achieved by running the command
 ```console
-./id-library-showcase prove-attribute-in-range --lower "19690501" --upper "19810417" --attribute-tag "dob" --proof-out rangeproof.json --account 3UHUEr3KkFG3pd6Zj3nH7hJfng9dpqwWPfSCuSwarw38diLLmd --credential-index 0 --grpc http://127.0.0.1:10001 --wallet export
+./id-library-showcase prove-attribute-in-range --lower "19690501" --upper "19810417" --attribute-tag "dob" --proof-out rangeproof.json --account 3UHUEr3KkFG3pd6Zj3nH7hJfng9dpqwWPfSCuSwarw38diLLmd --credential-index 0 --node http://127.0.0.1:10001 --wallet export
 Enter password to decrypt with:
 ```
 
@@ -111,7 +114,7 @@ indicating that the user claims that the credential holder with credential index
 
 The verifier can verify it by running
 ```console
-./id-library-showcase verify-claim --claim rangeproof.json --grpc http://127.0.0.1:10001
+./id-library-showcase verify-claim --claim rangeproof.json --node http://127.0.0.1:10001
 Result: true
 ```
 The above command checks the provided proof up against the on-chain commitment to the attribute (in this case the birthday). 
