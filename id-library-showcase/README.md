@@ -5,7 +5,7 @@ Here we demonstrate how to prove and verify properties about an identity behind 
 - prove that an attribute is in a range.
 
 ## Account key structure
-An account is owned by one or more credential holders. Each credential holder has a `credential index` and its own set of keys used to sign transactions. Each account has a threshold indicating how many of the credential holders owning the account is needed for signing a transaction. The account keys of an account consist of all the keys of all the credential holders. When creating an account, the user creating it will be the only account owner and will always have credential index `0`. When a user - a credential holder of an account - wants to prove or reveal anything about the account, it is always with respect to its own credential index.
+An account is owned by one or more credential holders. Each credential holder has a `credential index` and its own set of keys used to sign transactions. Each account has a threshold indicating how many of the credential holders owning the account are needed for signing a transaction. The account keys of an account consist of all the keys of all the credential holders. When creating an account, the user creating it will be the only account owner and will always have credential index `0`. When a user - a credential holder of an account - wants to prove or reveal anything about the account, it is always with respect to its own credential index.
 
 ## Reveal attribute
 When creating an account, the user can choose to reveal attributes publicly on chain, such as country of residence, identity document type and more.
