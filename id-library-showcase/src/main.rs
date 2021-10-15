@@ -663,6 +663,6 @@ fn handle_prove_ownership(po: ProveOwnership) -> anyhow::Result<()> {
     };
 
     write_json_to_file(&po.out, &proof).context("Could not output proof.")?;
-    println!("Wrote proof to {:?}.", po.out);
+    println!("Wrote proof to {}.", po.out.display());
     Ok(())
 }
