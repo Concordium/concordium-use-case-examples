@@ -615,7 +615,7 @@ fn handle_reveal_attribute(ra: RevealAttribute) -> anyhow::Result<()> {
         },
     };
     write_json_to_file(&ra.out, &claim).context("Could not output claim with proof.")?;
-    println!("Wrote claim with proof to {:?}.", ra.out);
+    println!("Wrote claim with proof to {}.", ra.out.display());
     Ok(())
 }
 
