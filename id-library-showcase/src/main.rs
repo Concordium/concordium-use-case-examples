@@ -518,7 +518,7 @@ async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow:
             },
         };
         write_json_to_file(&pair.out, &claim)?;
-        println!("Wrote claim with proof to {:?}.", pair.out);
+        println!("Wrote claim with proof to {}.", pair.out.display());
     } else {
         anyhow::bail!("Could not produce proof.");
     }
