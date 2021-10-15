@@ -629,7 +629,7 @@ fn handle_claim_ownership(cao: ClaimAccountOwnership) -> anyhow::Result<()> {
         },
     };
     write_json_to_file(&cao.out, &claim).context("Could not output claim.")?;
-    println!("Wrote claim to {:?}.", cao.out);
+    println!("Wrote claim to {}.", cao.out.display());
     Ok(())
 }
 
