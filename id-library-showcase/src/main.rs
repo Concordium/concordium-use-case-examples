@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-
+use anyhow::Context;
 use clap::AppSettings;
 use concordium_rust_sdk::{
     common::{encryption, types::CredentialIndex, SerdeDeserialize, SerdeSerialize},
@@ -9,6 +8,7 @@ use concordium_rust_sdk::{
         pedersen_commitment::Randomness as PedersenRandomness, range_proof::RangeProof, types::*,
     },
 };
+use dialoguer::Input;
 use pairing::bls12_381::Bls12;
 use rand::*;
 use serde::de::DeserializeOwned;
@@ -19,12 +19,9 @@ use std::{
     fs::File,
     io::{self, BufReader},
     marker::PhantomData,
-    path::Path,
+    path::{Path, PathBuf},
 };
 use structopt::StructOpt;
-
-use anyhow::Context;
-use dialoguer::Input;
 pub type ExampleCurve = <Bls12 as Pairing>::G1;
 
 /// We provide the following examples for proving statements about the identity
