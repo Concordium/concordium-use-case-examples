@@ -5,7 +5,7 @@ use concordium_rust_sdk::{
     common::{types::*, *},
     encrypted_transfers, endpoints, id,
     id::types::*,
-    postgres::{DatabaseClient, QueryOrder, *},
+    postgres::{DatabaseClient, *},
     types::*,
 };
 use futures::*;
@@ -262,11 +262,7 @@ async fn trace_single_account(
     file.set_extension("csv");
     let mut writer =
         csv::Writer::from_writer(std::fs::File::create(file).expect("Cannot create output file"));
-    let rows = db
-        .query_account(&traced_account, 10000, QueryOrder::Ascending {
-            start: None,
-        })
-        .await?;
+    let rows = db.iterate_account(&traced_account, None).await?;
     println!("Tracing: {}.", traced_account);
     writer = rows
         .fold(Ok(writer), |writer, entry| async {
