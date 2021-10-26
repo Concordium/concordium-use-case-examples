@@ -1,9 +1,10 @@
 use anyhow::Context;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::AppSettings;
+use elgamal;
 use concordium_rust_sdk::{
     common::{types::*, *},
-    elgamal, encrypted_transfers, endpoints, id,
+    encrypted_transfers, endpoints, id,
     id::types::*,
     postgres::{DatabaseClient, QueryOrder, *},
     types::*,
