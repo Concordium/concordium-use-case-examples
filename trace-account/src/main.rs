@@ -3,7 +3,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::AppSettings;
 use concordium_rust_sdk::{
     common::{types::*, *},
-    elgamal, encrypted_transfers, id,
+    elgamal, encrypted_transfers, endpoints, id,
     id::types::*,
     postgres::{DatabaseClient, QueryOrder, *},
     types::*,
@@ -60,6 +60,12 @@ where
 #[derive(SerdeDeserialize)]
 #[serde(rename_all = "camelCase")]
 struct RetrievalInput {
+    // Optional field does not match output of AR tool, but allows easy querying with only an
+    // account address.
+    reg_id:                Option<CredentialRegistrationID>,
+    /// The address output by AR tool is the one derived directly from the reg
+    /// ID, this might not be the actual address of the account.
+    /// It should not be used for queriyng if reg ID is present.
     account_address:       AccountAddress,
     /// An optional secret key. If present amounts will be decrypted, otherwise
     /// they will not.
@@ -97,19 +103,24 @@ struct Trace {
         help = "File with cryptographic parameters.",
         default_value = "global.json"
     )]
-    global: PathBuf,
+    global:   PathBuf,
     #[structopt(
         long = "db",
         default_value = "host=localhost dbname=transaction-outcome user=postgres \
                          password=password port=5432",
         help = "Database connection string."
     )]
-    config: tokio_postgres::Config,
+    config:   tokio_postgres::Config,
+    #[structopt(
+        long = "node",
+        help = "GRPC interface of the node.",
+        default_value = "http://localhost:10000"
+    )]
+    endpoint: tonic::transport::Endpoint,
     #[structopt(subcommand)]
-    mode:   Mode,
+    mode:     Mode,
 }
 
-// TODO: we should add support for querying via credid.
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let app = Trace::clap()
@@ -135,7 +146,14 @@ async fn main() {
     let table = elgamal::BabyStepGiantStep::new(global.encryption_in_exponent_generator(), 1 << 16);
     let db = match DatabaseClient::create(tr.config, NoTls).await {
         Ok(db) => db,
-        Err(e) => panic!("Connection to database failed: {}", e),
+        Err(e) => panic!("Connecting to database failed: {}", e),
+    };
+    let client = match endpoints::Client::connect(tr.endpoint, "rpcadmin".to_string()).await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Connecting to grpc failed: {}", e);
+            return;
+        }
     };
     match tr.mode {
         Mode::All { regids_file } => {
@@ -148,7 +166,7 @@ async fn main() {
             };
             let futures = inputs
                 .iter()
-                .map(|input| trace_single_account(&table, &db, input));
+                .map(|input| trace_single_account(&table, &db, &client, input));
             future::join_all(futures).await;
         }
         Mode::Single {
@@ -168,16 +186,18 @@ async fn main() {
                         }
                     };
                     RetrievalInput {
+                        reg_id: None,
                         account_address: address,
                         encryption_secret_key,
                     }
                 }
                 None => RetrievalInput {
+                    reg_id:                None,
                     account_address:       address,
                     encryption_secret_key: None,
                 },
             };
-            match trace_single_account(&table, &db, &input).await {
+            match trace_single_account(&table, &db, &client, &input).await {
                 Ok(()) => (),
                 Err(e) => panic!("Tracing failed: {}", e),
             }
@@ -203,10 +223,42 @@ struct CsvRow {
 async fn trace_single_account(
     table: &elgamal::BabyStepGiantStep<id::constants::ArCurve>,
     db: &DatabaseClient,
+    client: &concordium_rust_sdk::endpoints::Client,
     input: &RetrievalInput,
 ) -> anyhow::Result<()> {
-    let traced_account = input.account_address;
-    let mut file = Path::new(&traced_account.to_string()).to_path_buf(); // todo should we add them to a directory? (Possibly specified by user)
+    let traced_account = match &input.reg_id {
+        None => input.account_address,
+        Some(reg_id) => {
+            let mut client = client.clone();
+            let consensus_info = client.get_consensus_status().await?;
+            let acc_info = client
+                .get_account_info_by_cred_id(reg_id, &consensus_info.best_block)
+                .await?;
+            match acc_info
+                .account_credentials
+                .get(&CredentialIndex { index: 0 })
+            {
+                None => panic!("Initial credential missing."), // Initial credential is always
+                // present.
+                Some(versioned_credential) => match &versioned_credential.value {
+                    concordium_rust_sdk::id::types::AccountCredentialWithoutProofs::Initial {
+                        icdv,
+                    } => {
+                        let init_reg_id = icdv.reg_id;
+                        AccountAddress::new(&init_reg_id)
+                    }
+                    concordium_rust_sdk::id::types::AccountCredentialWithoutProofs::Normal {
+                        cdv,
+                        ..
+                    } => {
+                        let init_reg_id = cdv.cred_id;
+                        AccountAddress::new(&init_reg_id)
+                    }
+                },
+            }
+        }
+    };
+    let mut file = Path::new(&traced_account.to_string()).to_path_buf();
     file.set_extension("csv");
     let mut writer =
         csv::Writer::from_writer(std::fs::File::create(file).expect("Cannot create output file"));
@@ -353,9 +405,6 @@ async fn trace_single_account(
                                     wtr.serialize(&output)?;
                                 }
                                 AccountTransactionEffects::ContractInitialized { data } => {
-                                    // todo this assumes that the effects of contract effects
-                                    // resulting from this does not affect the balances (or that
-                                    // those effects are include in another transaction effect)
                                     let output = CsvRow {
                                         time: pretty_time(timestamp),
                                         transaction_type: serde_json::to_string(
@@ -883,7 +932,8 @@ async fn trace_single_account(
                     }
                 }
             }
-            Ok::<_, std::io::Error>(wtr) // Explicit error type allows use of ?
+            Ok::<_, std::io::Error>(wtr) // Explicit error type allows use of
+                                         // `?`
         })
         .await?;
     writer.flush()?;

@@ -2306,6 +2306,7 @@ dependencies = [
  "structopt",
  "tokio",
  "tokio-postgres",
+ "tonic",
 ]
 
 [[package]]
