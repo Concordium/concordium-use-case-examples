@@ -1,7 +1,6 @@
 use anyhow::Context;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::AppSettings;
-use elgamal;
 use concordium_rust_sdk::{
     common::{types::*, *},
     encrypted_transfers, endpoints, id,
@@ -267,7 +266,7 @@ async fn trace_single_account(
         .query_account(&traced_account, 10000, QueryOrder::Ascending {
             start: None,
         })
-        .await?; // todo which limit should be used?
+        .await?;
     println!("Tracing: {}.", traced_account);
     writer = rows
         .fold(Ok(writer), |writer, entry| async {
@@ -942,7 +941,7 @@ async fn trace_single_account(
 }
 
 fn pretty_time(timestamp: Timestamp) -> String {
-    let naive = NaiveDateTime::from_timestamp(timestamp.millis as i64 / 1000, 0); // todo display subsecond part?
+    let naive = NaiveDateTime::from_timestamp(timestamp.millis as i64 / 1000, 0);
     let dt: DateTime<Utc> = DateTime::from_utc(naive, Utc);
     dt.format("UTC %Y-%m-%d %H:%M:%S").to_string()
 }
