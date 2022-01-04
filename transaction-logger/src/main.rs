@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::AppSettings;
 use concordium_rust_sdk::{
     common::{types::Timestamp, SerdeSerialize},
@@ -19,6 +20,7 @@ use std::{
     },
 };
 use structopt::StructOpt;
+use thiserror::Error;
 use tokio_postgres::{
     types::{Json, ToSql},
     Transaction as DBTransaction,
@@ -316,6 +318,16 @@ impl AsRef<AccountAddressEq> for AccountAddress {
     fn as_ref(&self) -> &AccountAddressEq { unsafe { std::mem::transmute(self) } }
 }
 
+#[derive(Debug, Error)]
+enum NodeError {
+    /// Error establishing connection.
+    #[error("Error connecting to the node {0}.")]
+    ConnectionError(tonic::transport::Error),
+    /// Query errors, etc.
+    #[error("Error querying the node {0}.")]
+    OtherError(#[from] anyhow::Error),
+}
+
 /// Return Err if querying the node failed.
 /// Return Ok(()) if the channel to the database was closed.
 async fn use_node(
@@ -326,14 +338,22 @@ async fn use_node(
     max_parallel: u32,
     stop_flag: &AtomicBool,
     canonical_cache: &mut HashSet<AccountAddressEq>,
-) -> anyhow::Result<()> {
-    let mut node = endpoints::Client::connect(node_ep, token.into()).await?;
+) -> Result<(), NodeError> {
+    let mut node = endpoints::Client::connect(node_ep, token.into())
+        .await
+        .map_err(NodeError::ConnectionError)?;
     // if the cache is empty we seed it with all accounts at the last finalized
     // block. This will only happen the first time this function is successfully
     // invoked.
     if canonical_cache.is_empty() {
-        let info = node.get_consensus_status().await?;
-        let accounts = node.get_account_list(&info.last_finalized_block).await?;
+        let info = node
+            .get_consensus_status()
+            .await
+            .context("Error querying consensus status.")?;
+        let accounts = node
+            .get_account_list(&info.last_finalized_block)
+            .await
+            .context("Error querying account list.")?;
         // this relies on the fact that get_account_list returns canonical addresses.
         log::debug!(
             "Initializing the address cache with {} accounts.",
@@ -390,8 +410,10 @@ async fn use_node(
                                     addresses.push(addr);
                                 }
                             } else {
-                                let ainfo =
-                                    node.get_account_info(address, &info.block_hash).await?;
+                                let ainfo = node
+                                    .get_account_info(address, &info.block_hash)
+                                    .await
+                                    .context("Error querying account info.")?;
                                 let addr = ainfo.account_address();
                                 log::debug!("Discovered new address {}", addr);
                                 if !seen.insert(addr) {
@@ -655,9 +677,25 @@ async fn main() -> anyhow::Result<()> {
     // addresses. This is done by storing just equivalence classes represented
     // by the canonical address.
     let mut canonical_cache = HashSet::new();
-    // FIXME: Add a delay between reconnects to not have an expensive loop
-    // in case all connections fail.
-    for node_ep in app.endpoint.into_iter().cycle() {
+    // To make sure we do not end up in an infinite loop in case all reconnects fail
+    // we count reconnects.
+    let mut last_success: u64 = 0;
+    let num_nodes = app.endpoint.len() as u64;
+    for (node_ep, idx) in app.endpoint.into_iter().cycle().zip(0u64..) {
+        if stop_flag.load(Ordering::Acquire) {
+            break;
+        }
+        if idx.saturating_sub(last_success) >= num_nodes {
+            // we skipped all the nodes without success.
+            let delay = std::time::Duration::from_secs(5);
+            log::debug!(
+                "Connections to all nodes have failed. Pausing for {}s before trying node {} \
+                 again.",
+                delay.as_secs(),
+                node_ep.uri()
+            );
+            tokio::time::sleep(delay).await;
+        }
         // connect to the node.
         log::debug!("Attempting to use node {}", node_ep.uri());
         match use_node(
@@ -671,7 +709,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         {
-            Err(e) => {
+            Err(NodeError::ConnectionError(e)) => {
+                log::error!(
+                    "Failed to connect to node due to {}. Will attempt another node.",
+                    e
+                );
+            }
+            Err(NodeError::OtherError(e)) => {
+                last_success = idx;
                 log::error!(
                     "Node query failed due to: {}. Will attempt another node.",
                     e
