@@ -414,10 +414,12 @@ async fn use_node(
                                     .await
                                     .context("Error querying account info.")?;
                                 let addr = ainfo.account_address();
-                                log::debug!("Discovered new address {}", addr);
                                 if !seen.insert(addr) {
+                                    log::debug!("Discovered new address {}", addr);
                                     addresses.push(addr);
                                     canonical_cache.insert(AccountAddressEq(addr));
+                                } else {
+                                    log::debug!("Canonical address {} already listed.", addr);
                                 }
                             }
                         }
