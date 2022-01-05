@@ -30,7 +30,7 @@ use tokio_postgres::{
 struct App {
     #[structopt(
         long = "node",
-        help = "GRPC interface of the node.",
+        help = "GRPC interface of the node(s).",
         default_value = "http://localhost:10000",
         use_delimiter = true,
         env = "TRANSACTION_LOGGER_NODES"
