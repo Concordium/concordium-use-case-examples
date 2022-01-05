@@ -125,20 +125,19 @@ async fn insert_transaction(
         block_height,
         summary: BorrowedDatabaseSummaryEntry::BlockItem(&ts.summary),
     };
-    // TODO: User prepared statement for efficiency.
+    // TODO: Use prepared statement for efficiency.
     let id = insert_summary(tx, &summary_row).await?;
-    let statement = "INSERT INTO ati (account, summary) VALUES ($1, $2) RETURNING id";
+    let statement = "INSERT INTO ati (account, summary) VALUES ($1, $2)";
     for affected in affected_addresses.iter() {
         let addr_bytes: &[u8; 32] = affected.as_ref();
         let values = [
             &&addr_bytes[..] as &(dyn ToSql + Sync),
             &id as &(dyn ToSql + Sync),
         ];
-        tx.query_one(statement, &values).await?;
+        tx.query_opt(statement, &values).await?;
     }
     // insert contracts
-    let statement_contract =
-        "INSERT INTO cti (index, subindex, summary) VALUES ($1, $2, $3) RETURNING id";
+    let statement_contract = "INSERT INTO cti (index, subindex, summary) VALUES ($1, $2, $3)";
     for affected in ts.summary.affected_contracts() {
         let index = affected.index;
         let subindex = affected.subindex;
@@ -147,7 +146,7 @@ async fn insert_transaction(
             &(subindex.sub_index as i64),
             &id,
         ];
-        tx.query_one(statement_contract, &values).await?;
+        tx.query_opt(statement_contract, &values).await?;
     }
     Ok(())
 }
@@ -186,14 +185,14 @@ async fn insert_special(
         summary: BorrowedDatabaseSummaryEntry::ProtocolEvent(so),
     };
     let id = insert_summary(tx, &summary_row).await?;
-    let statement = "INSERT INTO ati (account, summary) VALUES ($1, $2) RETURNING id";
+    let statement = "INSERT INTO ati (account, summary) VALUES ($1, $2)";
     for affected in affected_addresses.iter() {
         let addr_bytes: &[u8; 32] = affected.as_ref();
         let values = [
             &&addr_bytes[..] as &(dyn ToSql + Sync),
             &id as &(dyn ToSql + Sync),
         ];
-        tx.query_one(statement, &values).await?;
+        tx.query_opt(statement, &values).await?;
     }
     Ok(())
 }
@@ -510,11 +509,12 @@ async fn write_to_db(
     // This is used to slow down attempts to not spam the database
     let mut successive_errors = 0;
     while !stop_flag.load(Ordering::Acquire) {
-        if let Some((bi, item_summaries, special_events)) = if let Some(v) = retry.take() {
+        let next_item = if let Some(v) = retry.take() {
             Some(v)
         } else {
             receiver.recv().await
-        } {
+        };
+        if let Some((bi, item_summaries, special_events)) = next_item {
             if let Err(e) = insert_block(
                 &mut db,
                 bi.block_hash,
