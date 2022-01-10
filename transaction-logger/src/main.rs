@@ -67,6 +67,14 @@ struct App {
         env = "TRANSACTION_LOGGER_NUM_PARALLEL_QUERIES"
     )]
     num_parallel: u32,
+    #[structopt(
+        long = "max-behind-seconds",
+        default_value = "240",
+        help = "Maximum number of seconds the node's last finalization can be behind before the \
+                node is given up and another one is tried.",
+        env = "TRANSACTION_LOGGER_MAX_BEHIND_SECONDS"
+    )]
+    max_behind:   u32,
 }
 
 #[derive(SerdeSerialize, Debug)]
@@ -253,11 +261,10 @@ async fn create_tables(db: &DatabaseClient) -> Result<(), postgres::Error> {
     db.as_ref().batch_execute(create_cti).await
 }
 
-const MAX_BEHIND_SECONDS: i64 = 180;
 const WAIT_MILLISECONDS: u64 = 500;
 const MAX_CONNECT_ATTEMPTS: u64 = 6;
 
-async fn check_node_and_wait(node: &mut endpoints::Client) -> anyhow::Result<()> {
+async fn check_node_and_wait(node: &mut endpoints::Client, max_behind: u32) -> anyhow::Result<()> {
     let info = node.get_consensus_status().await?;
     let now = chrono::Utc::now();
     if let Some((lft, duration)) = info
@@ -265,7 +272,7 @@ async fn check_node_and_wait(node: &mut endpoints::Client) -> anyhow::Result<()>
         .map(|t| (t, t.signed_duration_since(now)))
     {
         let secs = duration.num_seconds();
-        if !(0..=MAX_BEHIND_SECONDS).contains(&secs) {
+        if !(0..=max_behind.into()).contains(&secs) {
             anyhow::bail!("Node is likely behind. Its last finalized time is {}.", lft);
         } else {
             tokio::time::sleep(std::time::Duration::from_millis(WAIT_MILLISECONDS)).await;
@@ -337,6 +344,7 @@ async fn use_node(
     max_parallel: u32,
     stop_flag: &AtomicBool,
     canonical_cache: &mut HashSet<AccountAddressEq>,
+    max_behind: u32, // maximum number of seconds a node can be behind before it is deemed "behind"
 ) -> Result<(), NodeError> {
     let mut node = endpoints::Client::connect(node_ep, token.into())
         .await
@@ -442,7 +450,7 @@ async fn use_node(
                     success = false;
                     // if we failed one height we drop the rest since we likely failed those as
                     // well. In any case we must do things in order.
-                    check_node_and_wait(&mut node).await?;
+                    check_node_and_wait(&mut node, max_behind).await?;
                     break;
                 }
             }
@@ -457,7 +465,7 @@ async fn use_node(
 }
 
 /// Try to reconnect to the database with exponential backoff, at most
-/// MAX_RECONNECT_ATTEMPTS times.
+/// MAX_CONNECT_ATTEMPTS times.
 async fn try_reconnect(
     config: &postgres::Config,
     stop_flag: &AtomicBool,
@@ -708,6 +716,7 @@ async fn main() -> anyhow::Result<()> {
             app.num_parallel,
             stop_flag.as_ref(),
             &mut canonical_cache,
+            app.max_behind,
         )
         .await
         {
