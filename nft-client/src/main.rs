@@ -668,7 +668,7 @@ async fn send_transaction(
         next_account_nonce.nonce,
         expiry,
         energy,
-        &payload,
+        payload,
     );
     let bi = transactions::BlockItem::AccountTransaction(tx);
     let hash = bi.hash();

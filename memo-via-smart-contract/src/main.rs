@@ -150,7 +150,7 @@ async fn main() -> anyhow::Result<()> {
                 nonce,
                 expiry,
                 energy,
-                &payload,
+                payload,
             );
             let bi = transactions::BlockItem::AccountTransaction(tx);
             if client
