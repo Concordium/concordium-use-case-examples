@@ -5,10 +5,10 @@ use concordium_rust_sdk::types::smart_contracts::concordium_contracts_common::{
 use std::{convert::TryFrom, fmt::Display, str::FromStr};
 use thiserror::*;
 
-/// CTS1 Amount of tokens.
+/// CIS2 Amount of tokens.
 pub type TokenAmount = u64;
 
-/// CTS1 Token ID can be up to 255 bytes in size.
+/// CIS2 Token ID can be up to 255 bytes in size.
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone)]
 pub struct TokenIdVec(pub Vec<u8>);
 
@@ -43,7 +43,7 @@ impl std::fmt::Display for TokenIdVec {
     }
 }
 
-/// Serialize the token ID according to CTS1 specification.
+/// Serialize the token ID according to CIS2 specification.
 impl Serial for TokenIdVec {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
         let len = u8::try_from(self.0.len()).map_err(|_| W::Err::default())?;
@@ -52,7 +52,7 @@ impl Serial for TokenIdVec {
     }
 }
 
-/// Deserialize bytes to a Token ID according to CTS1 specification.
+/// Deserialize bytes to a Token ID according to CIS2 specification.
 impl Deserial for TokenIdVec {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
         let tokens_id_length = u8::deserial(source)?;
@@ -61,9 +61,9 @@ impl Deserial for TokenIdVec {
     }
 }
 
-/// The parameter for the NFT Contract function "CTS1-NFT.mint".
+/// The parameter for the NFT Contract function "CIS2-NFT.mint".
 /// Important: this is specific to this NFT smart contract and contract
-/// functions for minting are not part of the CTS1 specification.
+/// functions for minting are not part of the CIS2 specification.
 #[derive(Debug)]
 pub struct MintParams {
     pub owner:     Address,
@@ -82,13 +82,13 @@ impl Serial for MintParams {
 }
 
 /// Additional data bytes which can be included for each transfer in the
-/// transfer parameter for the CTS1 contract function "transfer".
+/// transfer parameter for the CIS2 contract function "transfer".
 #[derive(Debug, Clone)]
 pub struct AdditionalData {
     pub data: Vec<u8>,
 }
 
-/// Serialization for the additional data, serialized as according to the CTS1
+/// Serialization for the additional data, serialized as according to the CIS2
 /// specification.
 impl Serial for AdditionalData {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
@@ -134,7 +134,7 @@ impl Serial for Receiver {
     }
 }
 
-/// A description of a transfer according to the CTS1 specification.
+/// A description of a transfer according to the CIS2 specification.
 #[derive(Debug)]
 pub struct Transfer {
     /// The ID of the token type to transfer.
@@ -149,7 +149,7 @@ pub struct Transfer {
     pub data:     AdditionalData,
 }
 
-/// Serialization of a transfer, according to the CTS1 specification.
+/// Serialization of a transfer, according to the CIS2 specification.
 impl Serial for Transfer {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
         self.token_id.serial(out)?;
@@ -161,11 +161,11 @@ impl Serial for Transfer {
     }
 }
 
-/// The parameter type for the NFT contract function `CTS1-NFT.transfer`.
+/// The parameter type for the NFT contract function `CIS2-NFT.transfer`.
 #[derive(Debug)]
 pub struct TransferParams(pub Vec<Transfer>);
 
-/// Serialization of the transfer parameter, according to the CTS1
+/// Serialization of the transfer parameter, according to the CIS2
 /// specification.
 impl Serial for TransferParams {
     fn serial<W: Write>(&self, out: &mut W) -> Result<(), W::Err> {
@@ -184,7 +184,7 @@ pub enum OperatorUpdate {
     Add,
 }
 
-/// The deserialization of an operator update, according to the CTS1
+/// The deserialization of an operator update, according to the CIS2
 /// specification.
 impl Deserial for OperatorUpdate {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
@@ -212,13 +212,13 @@ type Sha256 = [u8; 32];
 /// A URL for the metadata.
 #[derive(Debug)]
 pub struct MetadataUrl {
-    /// The url encoded according to CTS1.
+    /// The url encoded according to CIS2.
     pub url:  String,
     /// An optional checksum of the content found at the URL.
     pub hash: Option<Sha256>,
 }
 
-/// Deserialization for MetadataUrl according to the CTS1 specification.
+/// Deserialization for MetadataUrl according to the CIS2 specification.
 impl Deserial for MetadataUrl {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
         let len = source.read_u16()?;
@@ -232,7 +232,7 @@ impl Deserial for MetadataUrl {
     }
 }
 
-/// Smart contract logged event, part of the CTS1 specification.
+/// Smart contract logged event, part of the CIS2 specification.
 #[derive(Debug)]
 pub enum Event {
     /// Transfer of an amount of tokens
@@ -265,7 +265,7 @@ pub enum Event {
         token_id:     TokenIdVec,
         metadata_url: MetadataUrl,
     },
-    /// Custom event outside of the CTS1 specification.
+    /// Custom event outside of the CIS2 specification.
     Unknown,
 }
 
@@ -339,14 +339,14 @@ impl Display for Event {
                 )?;
             }
             Event::Unknown => {
-                write!(f, "Unknown event: Event is not part of CTS1 specification")?;
+                write!(f, "Unknown event: Event is not part of CIS2 specification")?;
             }
         }
         Ok(())
     }
 }
 
-/// Deserialize the contract events as according to the CTS1 specification.
+/// Deserialize the contract events as according to the CIS2 specification.
 impl Deserial for Event {
     fn deserial<R: Read>(source: &mut R) -> Result<Self, ParseError> {
         let discriminant = u8::deserial(source)?;

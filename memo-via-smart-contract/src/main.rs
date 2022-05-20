@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::AppSettings;
 use concordium_rust_sdk::{
-    common, constants,
+    common,
     endpoints::{Client, Endpoint},
     id, postgres,
     types::{self, smart_contracts, transactions},
@@ -153,12 +153,10 @@ async fn main() -> anyhow::Result<()> {
                 payload,
             );
             let bi = transactions::BlockItem::AccountTransaction(tx);
-            if client
-                .send_transaction(constants::DEFAULT_NETWORK_ID, &bi)
-                .await?
-            {
+
+            if let Ok(hash) = client.send_block_item(&bi).await {
                 nonce.next_mut();
-                log::info!("Transaction submitted. Its hash is {}", bi.hash());
+                log::info!("Transaction submitted. Its hash is {}", hash);
             } else {
                 log::error!("Could not submit transaction.");
             }
