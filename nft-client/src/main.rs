@@ -17,14 +17,13 @@ use clap::AppSettings;
 use common::{SerdeDeserialize, SerdeSerialize};
 use concordium_contracts_common::Deserial;
 use concordium_rust_sdk::{
-    common,
+    cis2, common,
     endpoints::{Client, Endpoint},
     id, postgres,
     postgres::DatabaseSummaryEntry,
     types,
 };
 use futures::{StreamExt, TryStreamExt};
-use nft_client::cis2;
 use smart_contracts::concordium_contracts_common;
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
@@ -48,7 +47,7 @@ const NFT_CONTRACT_NAME: &str = "CIS2-NFT";
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct NFTContractAddressState {
     /// The tokens owned by this address.
-    owned_tokens: Set<cis2::TokenIdVec>,
+    owned_tokens: Set<cis2::TokenId>,
     /// The address which are currently enabled as operators for this address.
     operators:    Set<concordium_contracts_common::Address>,
 }
@@ -76,7 +75,9 @@ impl Deserial for NFTContractAddressState {
     }
 }
 
-/// The NFT contract state.
+/// The NFT contract state returned by the view function `view`, which is not
+/// part of CIS2 and is only implemented for debugging purposes.
+///
 /// Important: this structure matches the NFT contract implementations and
 /// cannot be assumed for any CIS2 contract state, as the CIS2 does not restrict
 /// the state in anyway.
@@ -200,6 +201,26 @@ struct AccountData {
     address:      id::types::AccountAddress,
 }
 
+/// The parameter for the NFT Contract function "CIS2-NFT.mint".
+/// Important: this is specific to this NFT smart contract and contract
+/// functions for minting are not part of the CIS2 specification.
+#[derive(Debug)]
+pub struct MintParams {
+    pub owner:     concordium_contracts_common::Address,
+    pub token_ids: Vec<cis2::TokenId>,
+}
+
+/// Serialization for the minting contract function parameter.
+/// Must match the serialization specified in the NFT smart contract.
+impl concordium_contracts_common::Serial for MintParams {
+    fn serial<W: concordium_contracts_common::Write>(&self, out: &mut W) -> Result<(), W::Err> {
+        self.owner.serial(out)?;
+        let len = u8::try_from(self.token_ids.len()).map_err(|_| W::Err::default())?;
+        len.serial(out)?;
+        concordium_contracts_common::serial_vector_no_length(&self.token_ids, out)
+    }
+}
+
 fn box_postgres_from_str(s: &str) -> Result<Box<postgres::Config>, tokio_postgres::Error> {
     Ok(Box::new(s.parse()?))
 }
@@ -233,6 +254,21 @@ enum Command {
         contract: ContractAddressWrapper,
     },
     #[structopt(
+        name = "balanceOf",
+        help = "Query the balance of an address for some token id"
+    )]
+    QueryBalanceOf {
+        #[structopt(long = "contract", help = "NFT contract address")]
+        contract:  ContractAddressWrapper,
+        #[structopt(long = "token", help = "Token ID to mint in the contract.")]
+        token_id:  cis2::TokenId,
+        #[structopt(help = "The addresses to query the balance of.
+                    This is either an account address or a contract address. Note that contract \
+                            addresses are written using the notation <index, subindex> where \
+                            the index and subindex are replaced with integers.")]
+        addresses: Vec<AddressWrapper>,
+    },
+    #[structopt(
         name = "trace-events",
         help = "Follow and print events for the contract."
     )]
@@ -262,7 +298,7 @@ enum Command {
         )]
         sender:    PathBuf,
         #[structopt(help = "Token ID to mint in the contract.")]
-        token_ids: Vec<cis2::TokenIdVec>,
+        token_ids: Vec<cis2::TokenId>,
     },
     #[structopt(name = "transfer", help = "Transfer one NFT to another address.")]
     Transfer {
@@ -279,7 +315,7 @@ enum Command {
             long = "token",
             help = "Token ID to transfer in the contract."
         )]
-        token_ids:    Vec<cis2::TokenIdVec>,
+        token_ids:    Vec<cis2::TokenId>,
         #[structopt(
             name = "from",
             long = "from",
@@ -348,10 +384,42 @@ async fn main() -> anyhow::Result<()> {
                 } => bytes.value,
                 _ => bail!("Failed to invoke the contract"),
             };
-            let mut cursor = concordium_contracts_common::Cursor::new(model);
-            let state = NFTContractState::deserial(&mut cursor)
+            let state: NFTContractState = concordium_contracts_common::from_bytes(&model)
                 .map_err(|_| anyhow!("Failed parsing contract state"))?;
             pretty_print_contract_state(&state);
+        }
+        Command::QueryBalanceOf {
+            contract,
+            token_id,
+            addresses,
+        } => {
+            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+                .await
+                .context("Failed to connect to Node GRPC")?;
+            let cis2_contract_name = concordium_contracts_common::OwnedContractName::new_unchecked(
+                "init_CIS2-NFT".to_string(),
+            );
+            let mut cis2_contract =
+                cis2::Cis2Contract::new(grpc_client.clone(), contract.0, cis2_contract_name);
+
+            let queries: Vec<cis2::BalanceOfQuery> = addresses
+                .iter()
+                .map(|adr| cis2::BalanceOfQuery {
+                    address:  convert_address(adr.0.clone()),
+                    token_id: token_id.clone(),
+                })
+                .collect();
+            let consensus_status = grpc_client.get_consensus_status().await?;
+
+            let result = cis2_contract
+                .balance_of(&consensus_status.best_block, queries.clone())
+                .await
+                .context("Failed invoking the query")?;
+
+            eprintln!("Balances for token {}", token_id);
+            for (address, balance) in addresses.iter().zip(result.as_ref().iter()) {
+                eprintln!("- {} : {}", address, balance);
+            }
         }
         Command::Trace { contract, config } => {
             eprintln!("Connecting to PostgreSQL");
@@ -421,9 +489,9 @@ async fn main() -> anyhow::Result<()> {
                 let summary = serde_json::from_value::<DatabaseSummaryEntry>(row.get(0))?;
                 let events = collect_summary_contract_events(summary, contract.0);
                 for event in events {
-                    let mut cursor = concordium_contracts_common::Cursor::new(event.as_ref());
-                    let event = cis2::Event::deserial(&mut cursor)
-                        .map_err(|_| anyhow!("Failed parsing event"))?;
+                    let event: cis2::Event =
+                        concordium_contracts_common::from_bytes(event.as_ref())
+                            .map_err(|_| anyhow!("Failed parsing event"))?;
                     println!("{}", event);
                 }
             }
@@ -439,7 +507,7 @@ async fn main() -> anyhow::Result<()> {
             .context("Could not parse the accounts file.")?;
 
             let owner = convert_account_address(&account_data.address);
-            let mint_parameter = cis2::MintParams {
+            let mint_parameter = MintParams {
                 owner:     concordium_contracts_common::Address::Account(owner),
                 token_ids: token_ids.clone(),
             };
@@ -459,7 +527,6 @@ async fn main() -> anyhow::Result<()> {
             let transaction_payload = transactions::Payload::Update {
                 payload: update_payload,
             };
-            let tokens_len = u64::try_from(token_ids.len())?;
             eprint!("Minting tokens with id: ");
             for token_id in token_ids {
                 eprint!("{} ", token_id);
@@ -471,8 +538,8 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
-            // Measured by experiments, will likely break if contract state becomes large:
-            let estimated_energy = 300 * tokens_len + 2000;
+            // Measured to be sufficient by experiments, will depend on the contract:
+            let estimated_energy = 3000;
 
             let hash = send_transaction(
                 &mut grpc_client,
@@ -518,47 +585,54 @@ async fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|token_id| cis2::Transfer {
                     token_id: token_id.clone(),
-                    amount:   1,
+                    amount:   cis2::TokenAmount::from(1u32),
                     from:     convert_address(from.0.clone()),
                     to:       to.clone(),
                     data:     to_func_data.clone(),
                 })
                 .collect();
 
-            let parameter = cis2::TransferParams(transfers);
-            let bytes = concordium_contracts_common::to_bytes(&parameter);
-
-            let payload = transactions::UpdateContractPayload {
-                amount:       common::types::Amount::from(0),
-                address:      contract.0,
-                receive_name: smart_contracts::ReceiveName::try_from(format!(
-                    "{}.transfer",
-                    NFT_CONTRACT_NAME
-                ))
-                .map_err(|e| anyhow!("Failed to parse receive name {}", e))?,
-                message:      smart_contracts::Parameter::from(bytes),
-            };
-
-            let transaction_payload = transactions::Payload::Update { payload };
-            eprintln!(
-                "Transferring tokens {:?} from {} to {:?}",
-                token_ids, from, to
-            );
             // The GRPC client for Concordium node.
             let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
+            let cis2_contract_name = concordium_contracts_common::OwnedContractName::new_unchecked(
+                "init_CIS2-NFT".to_string(),
+            );
+            let mut cis2_contract =
+                cis2::Cis2Contract::new(grpc_client.clone(), contract.0, cis2_contract_name);
+            let next_account_nonce = grpc_client
+                .get_next_account_nonce(&account_data.address)
+                .await?;
+            ensure!(
+                next_account_nonce.all_final,
+                "There are unfinalized transactions. Transaction nonce is not reliable enough."
+            );
+            let expiry = common::types::TransactionTime::from_seconds(
+                (chrono::Utc::now().timestamp() + 300) as u64,
+            );
             // Measured by experiments, will likely break if contract state becomes large:
-            let estimated_energy = 300 * u64::try_from(token_ids.len())? + 2000;
+            let estimated_energy = 300 * u64::try_from(token_ids.len())? + 5000;
+            let energy = transactions::send::GivenEnergy::Add(estimated_energy.into());
+            let amount = common::types::Amount::from(0);
+            eprintln!(
+                "Transferring tokens {:?} from {} to {:?}",
+                token_ids, from, to
+            );
 
-            let hash = send_transaction(
-                &mut grpc_client,
-                &account_data,
-                transaction_payload,
-                transactions::send::GivenEnergy::Add(estimated_energy.into()),
-            )
-            .await?;
+            let transaction_metadata = cis2::Cis2TransactionMetadata {
+                sender_address: account_data.address,
+                nonce: next_account_nonce.nonce,
+                expiry,
+                energy,
+                amount,
+            };
+
+            let hash = cis2_contract
+                .transfer(&account_data.account_keys, transaction_metadata, transfers)
+                .await
+                .context("CIS2 transfer failed")?;
             eprintln!("Transaction with hash {} sent", hash);
         }
     }
