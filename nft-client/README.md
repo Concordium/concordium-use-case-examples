@@ -1,9 +1,9 @@
 # NFT-client
 
 This is an example of an off-chain application which integrates with a smart contract on chain. The application is a client for working with a Non-fungible token(NFT) smart contract.
-The smart contract must follow the CIS1 specification, but for some of the functionality; additional assumptions are made for how the contract serializes the state and the existence of a "mint" contract function.
+The smart contract must follow the CIS2 specification, but for some of the functionality; additional assumptions are made for how the contract serializes the state and the existence of a "mint" contract function.
 
-An example of a smart contract where all of the functionality is supported is called ``cis1-nft`` and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
+An example of a smart contract where all of the functionality is supported is called ``cis2-nft`` and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
 
 Most of the functionality needs access to the GRPC API of a running concordium-node.
 Some functionality of the client additionally depends on the concordium-node to have the [transaction logging enabled](https://github.com/Concordium/concordium-node/blob/main/docs/transaction-logging.md) and access to
@@ -26,7 +26,7 @@ The NFT-client supports the following commands:
 Call the smart contract function for minting a number of NFTs with provided token IDs.
 This command will result in a transaction on the blockchain and requires account keys, see section for setting up account keys.
 
-This command will **not** work for any CIS1 smart contract, because the function for minting is not part of the specification.
+This command will **not** work for any CIS2 smart contract, because the function for minting is not part of the specification.
 
 Notice the smart contract will only allow the contract owner to call the mint function.
 
@@ -55,7 +55,7 @@ nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1
 
 Fetches the current state of the smart contract and displays the current NFT owners and the token IDs they own and enabled operators.
 
-Since CIS1 does not specify how to serialize the contract state, this will only work for smart contracts using the exact same serialization as the "CIS1-NFT" example.
+Since CIS2 does not specify how to serialize the contract state, this will only work for smart contracts using the exact same serialization as the "CIS2-NFT" example.
 
 To show the current state of the smart contract run:
 ```
@@ -63,7 +63,7 @@ nft-client show --contract "<54,0>"
 ```
 
 
-### Trace the CIS1 contract events
+### Trace the CIS2 contract events
 
 Requires node transaction logging to be setup with a PostgreSQL database.
 

@@ -42,8 +42,8 @@ const NFT_CONTRACT_NAME: &str = "CIS2-NFT";
 
 /// The NFT contract state for each address.
 /// Important: this structure matches the NFT contract implementations and
-/// cannot be assumed for any CIS2 contract state, as the CIS2 does not restrict
-/// the state in anyway.
+/// cannot be assumed to work for any CIS2 contract state, as the CIS2 does not
+/// restrict the state in anyway.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct NFTContractAddressState {
     /// The tokens owned by this address.
@@ -54,8 +54,8 @@ struct NFTContractAddressState {
 
 /// Deserialization of AddressState.
 /// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed for any CIS2 contract state is serialized, as the CIS2
-/// does not restrict how to encode the state in anyway.
+/// and cannot be assumed to work for any CIS2 contract state is serialized, as
+/// the CIS2 does not restrict how to encode the state in anyway.
 impl Deserial for NFTContractAddressState {
     fn deserial<R: concordium_contracts_common::Read>(
         source: &mut R,
@@ -79,8 +79,8 @@ impl Deserial for NFTContractAddressState {
 /// part of CIS2 and is only implemented for debugging purposes.
 ///
 /// Important: this structure matches the NFT contract implementations and
-/// cannot be assumed for any CIS2 contract state, as the CIS2 does not restrict
-/// the state in anyway.
+/// cannot be assumed to work for any CIS2 contract state, as the CIS2 does not
+/// restrict the state in anyway.
 #[derive(Debug)]
 struct NFTContractState {
     state: Map<concordium_contracts_common::Address, NFTContractAddressState>,
@@ -146,7 +146,7 @@ impl Display for ContractAddressWrapper {
 
 /// Name of a contract receive function, wrapped to implement FromStr.
 #[derive(Debug, Clone)]
-pub struct OwnedReceiveNameWrapper(concordium_contracts_common::OwnedReceiveName);
+struct OwnedReceiveNameWrapper(concordium_contracts_common::OwnedReceiveName);
 
 /// Parses a contract receive function name.
 impl FromStr for OwnedReceiveNameWrapper {
@@ -205,9 +205,21 @@ struct AccountData {
 /// Important: this is specific to this NFT smart contract and contract
 /// functions for minting are not part of the CIS2 specification.
 #[derive(Debug)]
-pub struct MintParams {
-    pub owner:     concordium_contracts_common::Address,
-    pub token_ids: Vec<cis2::TokenId>,
+struct MintParams {
+    owner:     concordium_contracts_common::Address,
+    token_ids: Vec<cis2::TokenId>,
+}
+
+impl MintParams {
+    fn new(
+        owner: concordium_contracts_common::Address,
+        token_ids: Vec<cis2::TokenId>,
+    ) -> anyhow::Result<Self> {
+        if token_ids.len() > 255 {
+            bail!("The parameter for minting NFTs only support up to 255 at a time.")
+        }
+        Ok(MintParams { owner, token_ids })
+    }
 }
 
 /// Serialization for the minting contract function parameter.
@@ -238,9 +250,15 @@ struct App {
         help = "GRPC interface of the node.",
         default_value = "http://localhost:10001"
     )]
-    endpoint: Endpoint,
+    endpoint:   Endpoint,
+    #[structopt(
+        long = "rpc-auth-token",
+        help = "GRPC authentication token.",
+        default_value = "rpcadmin"
+    )]
+    auth_token: String,
     #[structopt(subcommand)]
-    command:  Command,
+    command:    Command,
 }
 
 #[derive(Debug, StructOpt)]
@@ -255,17 +273,20 @@ enum Command {
     },
     #[structopt(
         name = "balanceOf",
-        help = "Query the balance of an address for some token id"
+        help = "Query the balance of an address for some token ID."
     )]
     QueryBalanceOf {
         #[structopt(long = "contract", help = "NFT contract address")]
         contract:  ContractAddressWrapper,
         #[structopt(long = "token", help = "Token ID to mint in the contract.")]
         token_id:  cis2::TokenId,
-        #[structopt(help = "The addresses to query the balance of.
+        #[structopt(
+            long = "address",
+            help = "The addresses to query the balance of.
                     This is either an account address or a contract address. Note that contract \
-                            addresses are written using the notation <index, subindex> where \
-                            the index and subindex are replaced with integers.")]
+                    addresses are written using the notation <index, subindex> where the index \
+                    and subindex are replaced with integers."
+        )]
         addresses: Vec<AddressWrapper>,
     },
     #[structopt(
@@ -289,8 +310,14 @@ enum Command {
         help = "Send mint transaction to NFT contract, with the given token IDs."
     )]
     Mint {
-        #[structopt(long = "contract", help = "NFT contract address")]
+        #[structopt(long = "contract", help = "NFT contract address.")]
         contract:  ContractAddressWrapper,
+        #[structopt(
+            long = "energy",
+            help = "Maximum allowed amount of energy to spend on the transaction.",
+            default_value = "10000"
+        )]
+        energy:    u64,
         #[structopt(
             name = "sender",
             long = "sender",
@@ -310,6 +337,12 @@ enum Command {
             help = "JSON file containing the account keys."
         )]
         sender:       PathBuf,
+        #[structopt(
+            long = "energy",
+            help = "Maximum allowed amount of energy to spend on the transaction.",
+            default_value = "10000"
+        )]
+        energy:       u64,
         #[structopt(
             name = "token_id",
             long = "token",
@@ -365,24 +398,37 @@ async fn main() -> anyhow::Result<()> {
     match app.command {
         Command::PrintState { contract } => {
             // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
-            let consensus_status = grpc_client.get_consensus_status().await?;
-            let contract_context =
-                smart_contracts::ContractContext::new(contract.0, smart_contracts::ReceiveName {
-                    name: String::from("CIS2-NFT.view"),
-                });
+            let consensus_status = grpc_client
+                .get_consensus_status()
+                .await
+                .context("Failed to get the consensus status")?;
+            let contract_context = smart_contracts::ContractContext::new(
+                contract.0,
+                smart_contracts::ReceiveName::try_from(format!("{}.view", NFT_CONTRACT_NAME))
+                    .map_err(|_| anyhow!("Failed to construct receive name"))?,
+            );
             let invoke_result = grpc_client
-                .invoke_contract(&consensus_status.best_block, &contract_context)
-                .await?;
+                .invoke_contract(&consensus_status.last_finalized_block, &contract_context)
+                .await
+                .context("Failed to invoke contract")?;
             let model = match invoke_result {
-                smart_contracts::InvokeContractResult::Success {
-                    return_value: Some(bytes),
-                    ..
-                } => bytes.value,
-                _ => bail!("Failed to invoke the contract"),
+                smart_contracts::InvokeContractResult::Success { return_value, .. } => {
+                    if let Some(value) = return_value {
+                        value.value
+                    } else {
+                        bail!("Invoking the smart contract failed to provide a return value");
+                    }
+                }
+                smart_contracts::InvokeContractResult::Failure { reason, .. } => {
+                    bail!(
+                        "Invoking the smart contract resulted in a failure: {:?}",
+                        reason
+                    );
+                }
             };
             let state: NFTContractState = concordium_contracts_common::from_bytes(&model)
                 .map_err(|_| anyhow!("Failed parsing contract state"))?;
@@ -393,7 +439,7 @@ async fn main() -> anyhow::Result<()> {
             token_id,
             addresses,
         } => {
-            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
                 .await
                 .context("Failed to connect to Node GRPC")?;
             let cis2_contract_name = concordium_contracts_common::OwnedContractName::new_unchecked(
@@ -412,7 +458,7 @@ async fn main() -> anyhow::Result<()> {
             let consensus_status = grpc_client.get_consensus_status().await?;
 
             let result = cis2_contract
-                .balance_of(&consensus_status.best_block, queries.clone())
+                .balance_of(&consensus_status.last_finalized_block, queries.clone())
                 .await
                 .context("Failed invoking the query")?;
 
@@ -500,6 +546,7 @@ async fn main() -> anyhow::Result<()> {
             sender,
             token_ids,
             contract,
+            energy,
         } => {
             let account_data: AccountData = serde_json::from_str(
                 &std::fs::read_to_string(sender).context("Could not read the keys file.")?,
@@ -507,10 +554,11 @@ async fn main() -> anyhow::Result<()> {
             .context("Could not parse the accounts file.")?;
 
             let owner = convert_account_address(&account_data.address);
-            let mint_parameter = MintParams {
-                owner:     concordium_contracts_common::Address::Account(owner),
-                token_ids: token_ids.clone(),
-            };
+            let mint_parameter = MintParams::new(
+                concordium_contracts_common::Address::Account(owner),
+                token_ids.clone(),
+            )
+            .context("Failed to construct mint parameter")?;
             let bytes = concordium_contracts_common::to_bytes(&mint_parameter);
 
             let update_payload = transactions::UpdateContractPayload {
@@ -534,24 +582,22 @@ async fn main() -> anyhow::Result<()> {
             eprintln!();
 
             // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
                 .await
                 .context("Failed to connect to Node GRPC")?;
-
-            // Measured to be sufficient by experiments, will depend on the contract:
-            let estimated_energy = 3000;
 
             let hash = send_transaction(
                 &mut grpc_client,
                 &account_data,
                 transaction_payload,
-                transactions::send::GivenEnergy::Add(estimated_energy.into()),
+                transactions::send::GivenEnergy::Add(energy.into()),
             )
             .await?;
             eprintln!("Transaction with hash {} sent", hash);
         }
         Command::Transfer {
             sender,
+            energy,
             token_ids,
             from,
             to,
@@ -593,7 +639,7 @@ async fn main() -> anyhow::Result<()> {
                 .collect();
 
             // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, "rpcadmin".to_string())
+            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
@@ -613,8 +659,7 @@ async fn main() -> anyhow::Result<()> {
                 (chrono::Utc::now().timestamp() + 300) as u64,
             );
             // Measured by experiments, will likely break if contract state becomes large:
-            let estimated_energy = 300 * u64::try_from(token_ids.len())? + 5000;
-            let energy = transactions::send::GivenEnergy::Add(estimated_energy.into());
+            let energy = transactions::send::GivenEnergy::Add(energy.into());
             let amount = common::types::Amount::from(0);
             eprintln!(
                 "Transferring tokens {:?} from {} to {:?}",
