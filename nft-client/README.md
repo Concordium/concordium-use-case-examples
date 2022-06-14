@@ -15,7 +15,7 @@ Run the following for a description of the functionality:
 nft-client --help
 ```
 
-Token IDs consists of bytes and are supplied and displayed hex encoded. Meaning the token IDs ``[10]`` and ``[10, 190]`` are encoded as `0a` and `0abe` respectively.
+Token IDs consists of bytes and are supplied and displayed hex encoded. Meaning the token IDs ``[10,0,0,0]`` and ``[10, 190,0,0]`` are encoded as `0a000000` and `0abe0000` respectively.
 
 ## Commands
 
@@ -32,9 +32,20 @@ Notice the smart contract will only allow the contract owner to call the mint fu
 
 #### Example:
 
-To mint two NFTs with tokenID `0a` and `0abe`; run the following command:
+To mint two NFTs with tokenID `0a000000` and `0abe0000`; run the following command:
 ```
 nft-client mint --contract "<54,0>" --sender key-test.json 0a 0abe
+```
+
+### Query balances
+
+Query the smart contract for balances for a given token ID. Takes a single token ID and a number of address to query the balance of. If successful it displays the addresses next to their current balance of the given token ID.
+
+#### Example:
+
+To query the balance of NFT with tokenID `0a000000` (hex encoded) for some addresses, we can run the following command
+```
+nft-client balanceOf --contract "<54,0>" --sender key-test.json --address "4RgTGQhg1Y8DAUkC2TpZsKmXdicArDqY9gcgJmBDECg4kkYNg4" --address "3UiNwnmZ64YR423uamgZyY8RnRkD88tfn6SYtKzvWZCkyFdN94" --token 0a000000
 ```
 
 
@@ -45,9 +56,9 @@ This command will result in a transaction on the blockchain and requires account
 
 #### Example:
 
-To transfer two NFTs with tokenID `0a` and `0abe` (hex encoded) we can run the following command
+To transfer two NFTs with tokenID `0a000000` and `0abe0000` (hex encoded) we can run the following command
 ```
-nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1Y8DAUkC2TpZsKmXdicArDqY9gcgJmBDECg4kkYNg4" --to "3UiNwnmZ64YR423uamgZyY8RnRkD88tfn6SYtKzvWZCkyFdN94" --token 0a --token 0abe
+nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1Y8DAUkC2TpZsKmXdicArDqY9gcgJmBDECg4kkYNg4" --to "3UiNwnmZ64YR423uamgZyY8RnRkD88tfn6SYtKzvWZCkyFdN94" --token 0a000000 --token 0abe0000
 ```
 
 
