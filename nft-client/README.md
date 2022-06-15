@@ -26,7 +26,7 @@ The NFT-client supports the following commands:
 Call the smart contract function for minting a number of NFTs with provided token IDs.
 This command will result in a transaction on the blockchain and requires account keys, see section for setting up account keys.
 
-This command will **not** work for any CIS2 smart contract, because the function for minting is not part of the specification.
+This command will **not** work for all CIS2 smart contracts, because the function for minting is not part of the specification.
 
 Notice the smart contract will only allow the contract owner to call the mint function.
 

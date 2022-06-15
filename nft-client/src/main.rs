@@ -42,7 +42,7 @@ const NFT_CONTRACT_NAME: &str = "CIS2-NFT";
 
 /// The NFT contract state for each address.
 /// Important: this structure matches the NFT contract implementations and
-/// cannot be assumed to work for any CIS2 contract state, as the CIS2 does not
+/// cannot be assumed to work for all CIS2 contract states, as the CIS2 does not
 /// restrict the state in anyway.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct NFTContractAddressState {
@@ -54,7 +54,7 @@ struct NFTContractAddressState {
 
 /// Deserialization of AddressState.
 /// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed to work for any CIS2 contract state is serialized, as
+/// and cannot be assumed to work for all serialized CIS2 contract states, as
 /// the CIS2 does not restrict how to encode the state in anyway.
 impl Deserial for NFTContractAddressState {
     fn deserial<R: concordium_contracts_common::Read>(
@@ -79,7 +79,7 @@ impl Deserial for NFTContractAddressState {
 /// part of CIS2 and is only implemented for debugging purposes.
 ///
 /// Important: this structure matches the NFT contract implementations and
-/// cannot be assumed to work for any CIS2 contract state, as the CIS2 does not
+/// cannot be assumed to work for all CIS2 contract states, as the CIS2 does not
 /// restrict the state in anyway.
 #[derive(Debug)]
 struct NFTContractState {
@@ -88,7 +88,7 @@ struct NFTContractState {
 
 /// Deserialization of the NFT contract state.
 /// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed for any CIS2 contract state is serialized, as the CIS2
+/// and cannot be assumed for all serialized CIS2 contract states, as the CIS2
 /// does not restrict how to encode the state in anyway.
 impl concordium_contracts_common::Deserial for NFTContractState {
     fn deserial<R: concordium_contracts_common::Read>(
@@ -658,7 +658,6 @@ async fn main() -> anyhow::Result<()> {
             let expiry = common::types::TransactionTime::from_seconds(
                 (chrono::Utc::now().timestamp() + 300) as u64,
             );
-            // Measured by experiments, will likely break if contract state becomes large:
             let energy = transactions::send::GivenEnergy::Add(energy.into());
             let amount = common::types::Amount::from(0);
             eprintln!(
