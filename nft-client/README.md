@@ -1,9 +1,9 @@
 # NFT-client
 
 This is an example of an off-chain application which integrates with a smart contract on chain. The application is a client for working with a Non-fungible token(NFT) smart contract.
-The smart contract must follow the CIS1 specification, but for some of the functionality; additional assumptions are made for how the contract serializes the state and the existence of a "mint" contract function.
+The smart contract must follow the CIS2 specification, but for some of the functionality; additional assumptions are made for how the contract serializes the state and the existence of a "mint" contract function.
 
-An example of a smart contract where all of the functionality is supported is called ``cis1-nft`` and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
+An example of a smart contract where all of the functionality is supported is called ``cis2-nft`` and can be found [here](https://github.com/Concordium/concordium-rust-smart-contracts/tree/main/examples).
 
 Most of the functionality needs access to the GRPC API of a running concordium-node.
 Some functionality of the client additionally depends on the concordium-node to have the [transaction logging enabled](https://github.com/Concordium/concordium-node/blob/main/docs/transaction-logging.md) and access to
@@ -15,7 +15,7 @@ Run the following for a description of the functionality:
 nft-client --help
 ```
 
-Token IDs consists of bytes and are supplied and displayed hex encoded. Meaning the token IDs ``[10]`` and ``[10, 190]`` are encoded as `0a` and `0abe` respectively.
+Token IDs consists of bytes and are supplied and displayed hex encoded. Meaning the token IDs ``[10,0,0,0]`` and ``[10, 190,0,0]`` are encoded as `0a000000` and `0abe0000` respectively.
 
 ## Commands
 
@@ -26,15 +26,26 @@ The NFT-client supports the following commands:
 Call the smart contract function for minting a number of NFTs with provided token IDs.
 This command will result in a transaction on the blockchain and requires account keys, see section for setting up account keys.
 
-This command will **not** work for any CIS1 smart contract, because the function for minting is not part of the specification.
+This command will **not** work for all CIS2 smart contracts, because the function for minting is not part of the specification.
 
 Notice the smart contract will only allow the contract owner to call the mint function.
 
 #### Example:
 
-To mint two NFTs with tokenID `0a` and `0abe`; run the following command:
+To mint two NFTs with tokenID `0a000000` and `0abe0000`; run the following command:
 ```
 nft-client mint --contract "<54,0>" --sender key-test.json 0a 0abe
+```
+
+### Query balances
+
+Query the smart contract for balances for a given token ID. Takes a single token ID and a number of address to query the balance of. If successful it displays the addresses next to their current balance of the given token ID.
+
+#### Example:
+
+To query the balance of NFT with tokenID `0a000000` (hex encoded) for some addresses, we can run the following command
+```
+nft-client balanceOf --contract "<54,0>" --sender key-test.json --address "4RgTGQhg1Y8DAUkC2TpZsKmXdicArDqY9gcgJmBDECg4kkYNg4" --address "3UiNwnmZ64YR423uamgZyY8RnRkD88tfn6SYtKzvWZCkyFdN94" --token 0a000000
 ```
 
 
@@ -45,9 +56,9 @@ This command will result in a transaction on the blockchain and requires account
 
 #### Example:
 
-To transfer two NFTs with tokenID `0a` and `0abe` (hex encoded) we can run the following command
+To transfer two NFTs with tokenID `0a000000` and `0abe0000` (hex encoded) we can run the following command
 ```
-nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1Y8DAUkC2TpZsKmXdicArDqY9gcgJmBDECg4kkYNg4" --to "3UiNwnmZ64YR423uamgZyY8RnRkD88tfn6SYtKzvWZCkyFdN94" --token 0a --token 0abe
+nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1Y8DAUkC2TpZsKmXdicArDqY9gcgJmBDECg4kkYNg4" --to "3UiNwnmZ64YR423uamgZyY8RnRkD88tfn6SYtKzvWZCkyFdN94" --token 0a000000 --token 0abe0000
 ```
 
 
@@ -55,7 +66,7 @@ nft-client transfer --contract "<54,0>" --sender key-test.json --from "4RgTGQhg1
 
 Fetches the current state of the smart contract and displays the current NFT owners and the token IDs they own and enabled operators.
 
-Since CIS1 does not specify how to serialize the contract state, this will only work for smart contracts using the exact same serialization as the "CIS1-NFT" example.
+Since CIS2 does not specify how to serialize the contract state, this will only work for smart contracts using the exact same serialization as the "CIS2-NFT" example.
 
 To show the current state of the smart contract run:
 ```
@@ -63,7 +74,7 @@ nft-client show --contract "<54,0>"
 ```
 
 
-### Trace the CIS1 contract events
+### Trace the CIS2 contract events
 
 Requires node transaction logging to be setup with a PostgreSQL database.
 
