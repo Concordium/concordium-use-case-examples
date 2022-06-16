@@ -215,9 +215,10 @@ impl MintParams {
         owner: concordium_contracts_common::Address,
         token_ids: Vec<cis2::TokenId>,
     ) -> anyhow::Result<Self> {
-        if token_ids.len() > 255 {
-            bail!("The parameter for minting NFTs only support up to 255 at a time.")
-        }
+        ensure!(
+            token_ids.len() > 255,
+            "The parameter for minting NFTs only support up to 255 at a time."
+        );
         Ok(MintParams { owner, token_ids })
     }
 }
@@ -409,7 +410,7 @@ async fn main() -> anyhow::Result<()> {
             let contract_context = smart_contracts::ContractContext::new(
                 contract.0,
                 smart_contracts::ReceiveName::try_from(format!("{}.view", NFT_CONTRACT_NAME))
-                    .map_err(|_| anyhow!("Failed to construct receive name"))?,
+                    .map_err(|e| anyhow!("Failed to construct receive name: {}", e))?,
             );
             let invoke_result = grpc_client
                 .invoke_contract(&consensus_status.last_finalized_block, &contract_context)
