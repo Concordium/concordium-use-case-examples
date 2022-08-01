@@ -385,7 +385,7 @@ async fn handle_rejection(err: warp::Rejection) -> Result<impl warp::Reply, Infa
             Errors::InvalidParameterLength => {
                 let message = "The memo must be exactly 32 bytes long, and encoded in hex.";
                 let code = StatusCode::BAD_REQUEST;
-                Ok(mk_reply(&message, code))
+                Ok(mk_reply(message, code))
             }
         }
     } else if let Some(error) = err.find::<BodyDeserializeError>() {
