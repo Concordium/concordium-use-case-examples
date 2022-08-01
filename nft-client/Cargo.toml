@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2018"
 
 [dependencies]
-concordium-rust-sdk = { path = "../deps/concordium-rust-sdk", version = "*", features = ["postgres"] }
+concordium-rust-sdk = { path = "../deps/concordium-rust-sdk", version = "*", features = ["postgres", "derive"] }
 anyhow = "1"
 tokio = {version = "1.8", features = ["full"]}
 thiserror = "1.0.28"
