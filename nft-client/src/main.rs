@@ -48,7 +48,7 @@ const NFT_CONTRACT_NAME: &str = "CIS2-NFT";
 struct NFTContractAddressState {
     /// The tokens owned by this address.
     owned_tokens: Set<cis2::TokenId>,
-    /// The address which are currently enabled as operators for this address.
+    /// The addresses which are currently enabled as operators for this address.
     operators:    Set<concordium_contracts_common::Address>,
 }
 
