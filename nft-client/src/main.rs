@@ -15,7 +15,7 @@
 use anyhow::*;
 use clap::AppSettings;
 use common::{SerdeDeserialize, SerdeSerialize};
-use concordium_contracts_common::Deserial;
+use concordium_contracts_common::{Deserial, Serial};
 use concordium_rust_sdk::{
     cis2, common,
     endpoints::{Client, Endpoint},
@@ -27,7 +27,7 @@ use futures::{StreamExt, TryStreamExt};
 use smart_contracts::concordium_contracts_common;
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
-    convert::{TryFrom, TryInto},
+    convert::TryFrom,
     fmt::Display,
     path::PathBuf,
     str::FromStr,
@@ -44,35 +44,12 @@ const NFT_CONTRACT_NAME: &str = "CIS2-NFT";
 /// Important: this structure matches the NFT contract implementations and
 /// cannot be assumed to work for all CIS2 contract states, as the CIS2 does not
 /// restrict the state in anyway.
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserial)]
 struct NFTContractAddressState {
     /// The tokens owned by this address.
     owned_tokens: Set<cis2::TokenId>,
-    /// The address which are currently enabled as operators for this address.
+    /// The addresses which are currently enabled as operators for this address.
     operators:    Set<concordium_contracts_common::Address>,
-}
-
-/// Deserialization of AddressState.
-/// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed to work for all serialized CIS2 contract states, as
-/// the CIS2 does not restrict how to encode the state in anyway.
-impl Deserial for NFTContractAddressState {
-    fn deserial<R: concordium_contracts_common::Read>(
-        source: &mut R,
-    ) -> Result<Self, concordium_contracts_common::ParseError> {
-        let owned_tokens_length = u16::deserial(source)?;
-        let owned_tokens = concordium_contracts_common::deserial_set_no_length_no_order_check(
-            source,
-            owned_tokens_length.into(),
-        )?;
-        let operators_length = u8::deserial(source)?;
-        let operators =
-            concordium_contracts_common::deserial_set_no_length(source, operators_length.into())?;
-        Ok(NFTContractAddressState {
-            owned_tokens,
-            operators,
-        })
-    }
 }
 
 /// The NFT contract state returned by the view function `view`, which is not
@@ -81,26 +58,9 @@ impl Deserial for NFTContractAddressState {
 /// Important: this structure matches the NFT contract implementations and
 /// cannot be assumed to work for all CIS2 contract states, as the CIS2 does not
 /// restrict the state in anyway.
-#[derive(Debug)]
+#[derive(Debug, Deserial)]
 struct NFTContractState {
     state: Map<concordium_contracts_common::Address, NFTContractAddressState>,
-}
-
-/// Deserialization of the NFT contract state.
-/// Important: this deserialization matches the NFT contract implementations
-/// and cannot be assumed for all serialized CIS2 contract states, as the CIS2
-/// does not restrict how to encode the state in anyway.
-impl concordium_contracts_common::Deserial for NFTContractState {
-    fn deserial<R: concordium_contracts_common::Read>(
-        source: &mut R,
-    ) -> Result<Self, concordium_contracts_common::ParseError> {
-        let length = u32::deserial(source)?;
-        let state = concordium_contracts_common::deserial_map_no_length_no_order_check(
-            source,
-            length.try_into()?,
-        )?;
-        Ok(NFTContractState { state })
-    }
 }
 
 /// Wrapper for contract address to implement FromStr and Display using the
@@ -204,9 +164,10 @@ struct AccountData {
 /// The parameter for the NFT Contract function "CIS2-NFT.mint".
 /// Important: this is specific to this NFT smart contract and contract
 /// functions for minting are not part of the CIS2 specification.
-#[derive(Debug)]
+#[derive(Debug, Serial)]
 struct MintParams {
     owner:     concordium_contracts_common::Address,
+    #[concordium(size_length = 1)]
     token_ids: Vec<cis2::TokenId>,
 }
 
@@ -220,17 +181,6 @@ impl MintParams {
             "The parameter for minting NFTs only support up to 255 at a time."
         );
         Ok(MintParams { owner, token_ids })
-    }
-}
-
-/// Serialization for the minting contract function parameter.
-/// Must match the serialization specified in the NFT smart contract.
-impl concordium_contracts_common::Serial for MintParams {
-    fn serial<W: concordium_contracts_common::Write>(&self, out: &mut W) -> Result<(), W::Err> {
-        self.owner.serial(out)?;
-        let len = u8::try_from(self.token_ids.len()).map_err(|_| W::Err::default())?;
-        len.serial(out)?;
-        concordium_contracts_common::serial_vector_no_length(&self.token_ids, out)
     }
 }
 
