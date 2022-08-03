@@ -359,7 +359,7 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
                     &global_context.on_chain_commitment_key,
                     &attribute,
                     &proof,
-                    &commitment,
+                    commitment,
                 );
                 println!("Result: {}", b);
             } else {
@@ -384,10 +384,10 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
             if let Some(commitment) = maybe_commitment {
                 let b = verify_attribute_range(
                     &global_context.on_chain_commitment_key,
-                    &global_context.bulletproof_generators(),
+                    global_context.bulletproof_generators(),
                     &lower,
                     &upper,
-                    &commitment,
+                    commitment,
                     &proof,
                 );
                 println!("Result: {}", b.is_ok());
@@ -438,7 +438,7 @@ async fn handle_verify_claim(vc: VerifyClaim) -> anyhow::Result<()> {
                 // Check the proof that the user came back with.
                 let proof: AccountOwnershipProof = read_json_from_file(path)?;
                 let b = verify_account_ownership(
-                    &public_keys,
+                    public_keys,
                     claim_about_account.account,
                     &challenge,
                     &proof,
@@ -496,7 +496,7 @@ async fn handle_prove_attribute_in_range(pair: ProveAttributeInRange) -> anyhow:
         pair.wallet,
     )?;
     let proof = prove_attribute_in_range(
-        &global_ctx.bulletproof_generators(),
+        global_ctx.bulletproof_generators(),
         &global_ctx.on_chain_commitment_key,
         &attribute,
         &pair.lower,
