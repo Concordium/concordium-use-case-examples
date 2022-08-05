@@ -21,19 +21,21 @@ use concordium_rust_sdk::{
     endpoints::{Client, Endpoint},
     id, postgres,
     postgres::DatabaseSummaryEntry,
-    types,
+    types::{
+        self,
+        smart_contracts::{OwnedContractName, OwnedReceiveName},
+    },
 };
 use futures::{StreamExt, TryStreamExt};
-use smart_contracts::concordium_contracts_common;
+use smart_contracts::concordium_contracts_common::{
+    self, AccountAddress, Address, Amount, ContractAddress,
+};
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
-    convert::TryFrom,
-    fmt::Display,
     path::PathBuf,
-    str::FromStr,
 };
 use structopt::*;
-use thiserror::*;
+
 use types::{smart_contracts, transactions};
 
 /// Name of the NFT smart contract from the example implementing the CIS2
@@ -49,7 +51,7 @@ struct NFTContractAddressState {
     /// The tokens owned by this address.
     owned_tokens: Set<cis2::TokenId>,
     /// The addresses which are currently enabled as operators for this address.
-    operators:    Set<concordium_contracts_common::Address>,
+    operators:    Set<Address>,
 }
 
 /// The NFT contract state returned by the view function `view`, which is not
@@ -60,95 +62,7 @@ struct NFTContractAddressState {
 /// restrict the state in anyway.
 #[derive(Debug, Deserial)]
 struct NFTContractState {
-    state: Map<concordium_contracts_common::Address, NFTContractAddressState>,
-}
-
-/// Wrapper for contract address to implement FromStr and Display using the
-/// "<54,0>" notation for contract address with index 54 and subindex 0.
-#[derive(Debug)]
-struct ContractAddressWrapper(types::ContractAddress);
-
-/// Error from parsing Contract address from a string.
-#[derive(Debug, Error)]
-enum ParseContractAddressError {
-    #[error("Failed to parse the index/subindex integer: {0}")]
-    ParseIntError(#[from] std::num::ParseIntError),
-    #[error("Missing comma separater between index and subindex")]
-    NoCommaError,
-}
-
-/// Parse a ContractAddressWrapper from a string of "<index,subindex>" where
-/// index and subindex are replaced with an u64.
-impl FromStr for ContractAddressWrapper {
-    type Err = ParseContractAddressError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = &s[1..s.len() - 1];
-        let (index, sub_index) = trimmed
-            .split_once(",")
-            .ok_or(ParseContractAddressError::NoCommaError)?;
-        let index = u64::from_str(index)?;
-        let sub_index = u64::from_str(sub_index)?;
-        Ok(ContractAddressWrapper(types::ContractAddress::new(
-            types::ContractIndex { index },
-            types::ContractSubIndex { sub_index },
-        )))
-    }
-}
-
-/// Display a contract address using the <index,subindex> notation where index
-/// and subindex are replaced with an u64.
-impl Display for ContractAddressWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        write!(f, "<{},{}>", self.0.index.index, self.0.subindex.sub_index)
-    }
-}
-
-/// Name of a contract receive function, wrapped to implement FromStr.
-#[derive(Debug, Clone)]
-struct OwnedReceiveNameWrapper(concordium_contracts_common::OwnedReceiveName);
-
-/// Parses a contract receive function name.
-impl FromStr for OwnedReceiveNameWrapper {
-    type Err = concordium_contracts_common::NewReceiveNameError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(OwnedReceiveNameWrapper(
-            concordium_contracts_common::OwnedReceiveName::new(s.to_string())?,
-        ))
-    }
-}
-
-/// Wrapper for Address to implement FromStr and Display using for strings which
-/// are either an account address or contract address.
-#[derive(Debug)]
-struct AddressWrapper(types::Address);
-
-/// Parse a string into an address, by first trying to parse the string as a
-/// contract address string, otherwise try parsing as an account address string.
-impl FromStr for AddressWrapper {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let contract_result = ContractAddressWrapper::from_str(s);
-        let address = if let Ok(contract) = contract_result {
-            types::Address::Contract(contract.0)
-        } else {
-            types::Address::Account(id::types::AccountAddress::from_str(s)?)
-        };
-        Ok(AddressWrapper(address))
-    }
-}
-
-/// Display the Address using contract notation <index,subindex> for contract
-/// addresses and display for account addresses.
-impl Display for AddressWrapper {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
-        match self.0 {
-            types::Address::Account(a) => a.fmt(f),
-            types::Address::Contract(c) => ContractAddressWrapper(c).fmt(f),
-        }
-    }
+    state: Map<Address, NFTContractAddressState>,
 }
 
 /// Helper to parse account keys JSON format.
@@ -158,7 +72,7 @@ struct AccountData {
     /// The keys for the account address.
     account_keys: id::types::AccountKeys,
     /// The account address.
-    address:      id::types::AccountAddress,
+    address:      AccountAddress,
 }
 
 /// The parameter for the NFT Contract function "CIS2-NFT.mint".
@@ -166,16 +80,13 @@ struct AccountData {
 /// functions for minting are not part of the CIS2 specification.
 #[derive(Debug, Serial)]
 struct MintParams {
-    owner:     concordium_contracts_common::Address,
+    owner:     Address,
     #[concordium(size_length = 1)]
     token_ids: Vec<cis2::TokenId>,
 }
 
 impl MintParams {
-    fn new(
-        owner: concordium_contracts_common::Address,
-        token_ids: Vec<cis2::TokenId>,
-    ) -> anyhow::Result<Self> {
+    fn new(owner: Address, token_ids: Vec<cis2::TokenId>) -> anyhow::Result<Self> {
         ensure!(
             token_ids.len() > 255,
             "The parameter for minting NFTs only support up to 255 at a time."
@@ -220,7 +131,7 @@ enum Command {
     )]
     PrintState {
         #[structopt(long = "contract", help = "NFT contract address")]
-        contract: ContractAddressWrapper,
+        contract: ContractAddress,
     },
     #[structopt(
         name = "balanceOf",
@@ -228,7 +139,7 @@ enum Command {
     )]
     QueryBalanceOf {
         #[structopt(long = "contract", help = "NFT contract address")]
-        contract:  ContractAddressWrapper,
+        contract:  ContractAddress,
         #[structopt(long = "token", help = "Token ID to mint in the contract.")]
         token_id:  cis2::TokenId,
         #[structopt(
@@ -238,7 +149,7 @@ enum Command {
                     addresses are written using the notation <index, subindex> where the index \
                     and subindex are replaced with integers."
         )]
-        addresses: Vec<AddressWrapper>,
+        addresses: Vec<Address>,
     },
     #[structopt(
         name = "trace-events",
@@ -246,7 +157,7 @@ enum Command {
     )]
     Trace {
         #[structopt(long = "contract", help = "NFT contract address")]
-        contract: ContractAddressWrapper,
+        contract: ContractAddress,
         #[structopt(
             long = "db",
             default_value = "host=localhost dbname=nft_client_logging user=nft-client \
@@ -262,7 +173,7 @@ enum Command {
     )]
     Mint {
         #[structopt(long = "contract", help = "NFT contract address.")]
-        contract:  ContractAddressWrapper,
+        contract:  ContractAddress,
         #[structopt(
             long = "energy",
             help = "Maximum allowed amount of energy to spend on the transaction.",
@@ -281,7 +192,7 @@ enum Command {
     #[structopt(name = "transfer", help = "Transfer one NFT to another address.")]
     Transfer {
         #[structopt(long = "contract", help = "NFT contract address")]
-        contract:     ContractAddressWrapper,
+        contract:     ContractAddress,
         #[structopt(
             name = "sender",
             long = "sender",
@@ -308,7 +219,7 @@ enum Command {
                     addresses are written using the notation <index, subindex> where the index \
                     and subindex are replaced with integers."
         )]
-        from:         AddressWrapper,
+        from:         Address,
         #[structopt(
             name = "to",
             long = "to",
@@ -317,14 +228,14 @@ enum Command {
                     addresses are written using the notation <index, subindex> where the index \
                     and subindex are replaced with integers."
         )]
-        to:           AddressWrapper,
+        to:           Address,
         #[structopt(
             name = "to-func",
             long = "to-func",
             help = "The receive function name to call on the contract receiving tokens, only used \
                     when `--to` is a contract address."
         )]
-        to_func:      Option<OwnedReceiveNameWrapper>,
+        to_func:      Option<OwnedReceiveName>,
         #[structopt(
             name = "to-func-data",
             long = "to-func-data",
@@ -358,9 +269,10 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to get the consensus status")?;
             let contract_context = smart_contracts::ContractContext::new(
-                contract.0,
-                smart_contracts::ReceiveName::try_from(format!("{}.view", NFT_CONTRACT_NAME))
-                    .map_err(|e| anyhow!("Failed to construct receive name: {}", e))?,
+                contract,
+                format!("{}.view", NFT_CONTRACT_NAME)
+                    .parse()
+                    .context("Failed to construct receive name")?,
             );
             let invoke_result = grpc_client
                 .invoke_contract(&consensus_status.last_finalized_block, &contract_context)
@@ -382,7 +294,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             let state: NFTContractState = concordium_contracts_common::from_bytes(&model)
-                .map_err(|_| anyhow!("Failed parsing contract state"))?;
+                .context("Failed parsing contract state")?;
             pretty_print_contract_state(&state);
         }
         Command::QueryBalanceOf {
@@ -393,16 +305,14 @@ async fn main() -> anyhow::Result<()> {
             let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
                 .await
                 .context("Failed to connect to Node GRPC")?;
-            let cis2_contract_name = concordium_contracts_common::OwnedContractName::new_unchecked(
-                "init_CIS2-NFT".to_string(),
-            );
+            let cis2_contract_name = OwnedContractName::new_unchecked("init_CIS2-NFT".to_string());
             let mut cis2_contract =
-                cis2::Cis2Contract::new(grpc_client.clone(), contract.0, cis2_contract_name);
+                cis2::Cis2Contract::new(grpc_client.clone(), contract, cis2_contract_name);
 
             let queries: Vec<cis2::BalanceOfQuery> = addresses
                 .iter()
-                .map(|adr| cis2::BalanceOfQuery {
-                    address:  convert_address(adr.0.clone()),
+                .map(|&address| cis2::BalanceOfQuery {
+                    address,
                     token_id: token_id.clone(),
                 })
                 .collect();
@@ -453,7 +363,7 @@ async fn main() -> anyhow::Result<()> {
                             END IF;
                             RETURN NEW;
                         END;$psql$ LANGUAGE plpgsql",
-                        contract.0.index.index, contract.0.subindex.sub_index
+                        contract.index, contract.subindex
                     )
                     .as_str(),
                     &[],
@@ -484,11 +394,11 @@ async fn main() -> anyhow::Result<()> {
                     ])
                     .await?;
                 let summary = serde_json::from_value::<DatabaseSummaryEntry>(row.get(0))?;
-                let events = collect_summary_contract_events(summary, contract.0);
+                let events = collect_summary_contract_events(summary, contract);
                 for event in events {
                     let event: cis2::Event =
                         concordium_contracts_common::from_bytes(event.as_ref())
-                            .map_err(|_| anyhow!("Failed parsing event"))?;
+                            .context("Failed parsing event")?;
                     println!("{}", event);
                 }
             }
@@ -504,22 +414,16 @@ async fn main() -> anyhow::Result<()> {
             )
             .context("Could not parse the accounts file.")?;
 
-            let owner = convert_account_address(&account_data.address);
-            let mint_parameter = MintParams::new(
-                concordium_contracts_common::Address::Account(owner),
-                token_ids.clone(),
-            )
-            .context("Failed to construct mint parameter")?;
+            let mint_parameter = MintParams::new(account_data.address.into(), token_ids.clone())
+                .context("Failed to construct mint parameter")?;
             let bytes = concordium_contracts_common::to_bytes(&mint_parameter);
 
             let update_payload = transactions::UpdateContractPayload {
-                amount:       common::types::Amount::from(0),
-                address:      contract.0,
-                receive_name: smart_contracts::ReceiveName::try_from(format!(
-                    "{}.mint",
-                    NFT_CONTRACT_NAME
-                ))
-                .map_err(|e| anyhow!("Failed to parse receive name {}", e))?,
+                amount:       common::types::Amount::zero(),
+                address:      contract,
+                receive_name: format!("{}.mint", NFT_CONTRACT_NAME)
+                    .parse()
+                    .context("Failed to parse receive name")?,
                 message:      smart_contracts::Parameter::from(bytes),
             };
 
@@ -561,20 +465,16 @@ async fn main() -> anyhow::Result<()> {
             )
             .context("Could not parse the accounts file.")?;
 
-            let to = match to.0 {
-                types::Address::Account(address) => {
-                    cis2::Receiver::Account(convert_account_address(&address))
-                }
-                types::Address::Contract(address) => {
-                    let receive_name = to_func
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "Transferring to a contract, requires inputting a receive \
-                                 function --to-func"
-                            )
-                        })?
-                        .0;
-                    cis2::Receiver::Contract(convert_contract_address(&address), receive_name)
+            let to = match to {
+                Address::Account(address) => cis2::Receiver::Account(address),
+                Address::Contract(address) => {
+                    let receive_name = to_func.ok_or_else(|| {
+                        anyhow!(
+                            "Transferring to a contract, requires inputting a receive function \
+                             --to-func"
+                        )
+                    })?;
+                    cis2::Receiver::Contract(address, receive_name)
                 }
             };
 
@@ -582,10 +482,10 @@ async fn main() -> anyhow::Result<()> {
                 .iter()
                 .map(|token_id| cis2::Transfer {
                     token_id: token_id.clone(),
-                    amount:   cis2::TokenAmount::from(1u32),
-                    from:     convert_address(from.0.clone()),
-                    to:       to.clone(),
-                    data:     to_func_data.clone(),
+                    amount: cis2::TokenAmount::from(1u32),
+                    from,
+                    to: to.clone(),
+                    data: to_func_data.clone(),
                 })
                 .collect();
 
@@ -594,11 +494,9 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
-            let cis2_contract_name = concordium_contracts_common::OwnedContractName::new_unchecked(
-                "init_CIS2-NFT".to_string(),
-            );
+            let cis2_contract_name = OwnedContractName::new_unchecked("init_CIS2-NFT".to_string());
             let mut cis2_contract =
-                cis2::Cis2Contract::new(grpc_client.clone(), contract.0, cis2_contract_name);
+                cis2::Cis2Contract::new(grpc_client.clone(), contract, cis2_contract_name);
             let next_account_nonce = grpc_client
                 .get_next_account_nonce(&account_data.address)
                 .await?;
@@ -610,7 +508,7 @@ async fn main() -> anyhow::Result<()> {
                 (chrono::Utc::now().timestamp() + 300) as u64,
             );
             let energy = transactions::send::GivenEnergy::Add(energy.into());
-            let amount = common::types::Amount::from(0);
+            let amount = Amount::zero();
             eprintln!(
                 "Transferring tokens {:?} from {} to {:?}",
                 token_ids, from, to
@@ -672,47 +570,10 @@ fn collect_summary_contract_events(
     }
 }
 
-/// Convert an account address from `types` to an account address from
-/// `concordium_contracts_common`.
-fn convert_account_address(
-    account: &id::types::AccountAddress,
-) -> concordium_contracts_common::AccountAddress {
-    let mut address_bytes = [0u8; 32];
-    address_bytes.copy_from_slice(account.as_ref());
-    concordium_contracts_common::AccountAddress(address_bytes)
-}
-
-/// Convert a contract address from `types` to a contract address from
-/// `concordium_contracts_common`.
-fn convert_contract_address(
-    contract: &types::ContractAddress,
-) -> concordium_contracts_common::ContractAddress {
-    concordium_contracts_common::ContractAddress {
-        index:    contract.index.index,
-        subindex: contract.subindex.sub_index,
-    }
-}
-
-/// Convert an address from `types` to an address from
-/// `concordium_contracts_common`.
-fn convert_address(address: types::Address) -> concordium_contracts_common::Address {
-    match address {
-        types::Address::Account(addr) => {
-            concordium_contracts_common::Address::Account(convert_account_address(&addr))
-        }
-        types::Address::Contract(addr) => {
-            concordium_contracts_common::Address::Contract(convert_contract_address(&addr))
-        }
-    }
-}
-
 /// Print the NFT contract state in a human readable format.
 fn pretty_print_contract_state(state: &NFTContractState) {
     for (owner, address_state) in &state.state {
-        match owner {
-            concordium_contracts_common::Address::Account(addr) => println!("\n\n{}", addr),
-            concordium_contracts_common::Address::Contract(addr) => println!("\n\n{}", addr),
-        }
+        println!("\n\n{}", owner);
         if !address_state.owned_tokens.is_empty() {
             println!("  Owned Token IDs");
             for token in &address_state.owned_tokens {

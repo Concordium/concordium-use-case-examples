@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
                 payload: transactions::UpdateContractPayload {
                     amount,
                     address,
-                    receive_name: smart_contracts::ReceiveName::try_from(
+                    receive_name: smart_contracts::OwnedReceiveName::try_from(
                         "memo.receive".to_string(),
                     )
                     .unwrap(),
@@ -275,8 +275,9 @@ async fn list_transactions(
                             .into_iter()
                             .filter_map(|event| match event {
                                 types::ContractTraceElement::Updated { data } => {
-                                    if <&str as From<_>>::from(&data.receive_name) == "memo.receive"
-                                    {
+                                    let receive_name_str =
+                                        data.receive_name.as_receive_name().get_chain_name();
+                                    if receive_name_str == "memo.receive" {
                                         Some(serde_json::json!({
                                             "sender": sender,
                                             "memo": data.message,
@@ -316,7 +317,7 @@ async fn enqueue_transaction(
     form: Form,
     sender: mpsc::Sender<ChannelValues>,
 ) -> Result<types::ContractAddress, warp::reject::Rejection> {
-    let addr = types::ContractAddress::new(form.index, 0.into());
+    let addr = types::ContractAddress::new(form.index, 0);
     if form.memo.as_ref().len() != 32 {
         return Err(Errors::InvalidParameterLength.into());
     }
