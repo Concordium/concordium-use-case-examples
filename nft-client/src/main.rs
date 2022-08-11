@@ -468,12 +468,10 @@ async fn main() -> anyhow::Result<()> {
             let to = match to {
                 Address::Account(address) => cis2::Receiver::Account(address),
                 Address::Contract(address) => {
-                    let receive_name = to_func.ok_or_else(|| {
-                        anyhow!(
-                            "Transferring to a contract, requires inputting a receive function \
-                             --to-func"
-                        )
-                    })?;
+                    let receive_name = to_func.context(
+                        "Transferring to a contract, requires inputting a receive function \
+                         --to-func",
+                    )?;
                     cis2::Receiver::Contract(address, receive_name)
                 }
             };
