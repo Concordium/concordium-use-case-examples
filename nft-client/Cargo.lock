@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "concordium-contracts-common"
-version = "3.0.0"
+version = "3.1.0"
 dependencies = [
  "base58check",
  "chrono",
@@ -374,11 +374,12 @@ dependencies = [
  "num-traits",
  "serde",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
 name = "concordium-contracts-common-derive"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -509,6 +510,7 @@ dependencies = [
  "base64",
  "block-modes",
  "byteorder",
+ "concordium-contracts-common",
  "crypto_common_derive",
  "derive_more",
  "ed25519-dalek",
@@ -1076,7 +1078,6 @@ name = "id"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base58check",
  "bulletproofs",
  "byteorder",
  "chrono",
