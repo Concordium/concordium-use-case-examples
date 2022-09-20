@@ -6,6 +6,7 @@ use concordium_rust_sdk::{
         range_proof::RangeProof,
         types::{AccountAddress, AccountCredentialWithoutProofs, AttributeTag, GlobalContext},
     },
+    types::hashes::TransactionHash,
 };
 
 use log::{error, info, warn};
@@ -83,11 +84,11 @@ async fn main() -> anyhow::Result<()> {
         basket: Basket { basket: Vec::new() },
         global_context,
     }));
-
+    let add_state = state.clone();
     let add_to_basket = warp::post()
         .and(warp::filters::body::content_length_limit(50 * 1024))
         .and(warp::path!("add"))
-        .and(handle_add_basket(client, state));
+        .and(handle_add_basket(client, add_state));
 
     let list_items = warp::get().and(warp::path!("list")).and_then(|| async {
         Ok::<_, Rejection>(warp::reply::json(&[
@@ -100,11 +101,53 @@ async fn main() -> anyhow::Result<()> {
         ]))
     });
 
+    let basket_content = warp::get().and(warp::path!("basket")).and_then(move || {
+        let state = state.clone();
+        async move {
+            let server = state.lock().expect("Cannot lock");
+            Ok::<_, Rejection>(warp::reply::json(&server.basket.basket))
+        }
+    });
+
+    // let checkout = warp::post()
+    //     .and(warp::filters::body::content_length_limit(50 * 1024))
+    //     .and(warp::path!("pay"))
+    //     .and(handle_pay(client, state));
+
     info!("Booting up HTTP server. Listening on port {}.", app.port);
-    let server = add_to_basket.or(list_items).recover(handle_rejection);
+    let cors = warp::cors().allow_any_origin();
+    let server = add_to_basket
+        .or(list_items)
+        .or(basket_content)
+        .recover(handle_rejection).with(cors);
     warp::serve(server).run(([0, 0, 0, 0], app.port)).await;
     Ok(())
 }
+
+// fn handle_pay(
+//     mut client: concordium_rust_sdk::endpoints::Client,
+//     state: Arc<Mutex<Server>>,
+// ) -> impl Filter<Extract = (impl Reply,), Error = Rejection> + Clone {
+//     todo!()
+//     // warp::body::json().and_then(move |request: TransactionHash| {
+//     //     let client = client.clone();
+//     //     let state = Arc::clone(&state);
+//     //     async move {
+//     //         info!("Paying");
+//     //         let status = match client.get_transaction_status(&request).await {
+//     //             Err(e) if e.is_not_found() => {
+//     //                 error!("Unable to get transaction status: {}.", e);
+//     //                 return Err(PayError::from(e));
+//     //             }
+//     //             Ok(s) => s,
+//     //         };
+//     //         if let Some((bh, summary)) = status.is_finalized() {
+//     //             match summary {}
+//     //         } else {
+//     //         }
+//     //     }
+//     // })
+// }
 
 fn handle_add_basket(
     client: concordium_rust_sdk::endpoints::Client,
@@ -114,7 +157,7 @@ fn handle_add_basket(
         let client = client.clone();
         let state = Arc::clone(&state);
         async move {
-            info!("Queried for creating an identity");
+            info!("Queried for adding to basket");
             match validate_worker(client.clone(), state, request).await {
                 Ok(r) => Ok(warp::reply::json(&r)),
                 Err(e) => {
@@ -138,11 +181,21 @@ enum AddBasketError {
     NodeAccess(#[from] QueryError),
 }
 
+#[derive(Debug, thiserror::Error)]
+enum PayError {
+    #[error("Transaction is not finalized")]
+    NotFinalized,
+    #[error("Node access error: {0}")]
+    NodeAccess(#[from] QueryError),
+}
+
 impl From<RPCError> for AddBasketError {
     fn from(err: RPCError) -> Self { Self::NodeAccess(err.into()) }
 }
 
 impl warp::reject::Reject for AddBasketError {}
+
+impl warp::reject::Reject for PayError {}
 
 #[derive(serde::Serialize)]
 /// Response in case of an error. This is going to be encoded as a JSON body
@@ -177,6 +230,14 @@ async fn handle_rejection(err: Rejection) -> Result<impl warp::Reply, Infallible
     } else if let Some(AddBasketError::NodeAccess(e)) = err.find() {
         let code = StatusCode::INTERNAL_SERVER_ERROR;
         let message = format!("Cannot access the node: {}", e);
+        Ok(mk_reply(message, code))
+    } else if let Some(PayError::NodeAccess(e)) = err.find() {
+        let code = StatusCode::INTERNAL_SERVER_ERROR;
+        let message = format!("Cannot access the node: {}", e);
+        Ok(mk_reply(message, code))
+    } else if let Some(PayError::NotFinalized) = err.find() {
+        let code = StatusCode::BAD_REQUEST;
+        let message = format!("Transaction is not finalized.");
         Ok(mk_reply(message, code))
     } else if err
         .find::<warp::filters::body::BodyDeserializeError>()
