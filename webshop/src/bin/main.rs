@@ -32,15 +32,15 @@ struct WebShopConfig {
         default_value = "8100",
         help = "Port on which the server will listen on."
     )]
-    port:     u16,
+    port: u16,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct AgeProofOutput {
     account: AccountAddress,
-    lower:   AttributeKind,
-    upper:   AttributeKind,
-    proof:   RangeProof<ArCurve>,
+    lower: AttributeKind,
+    upper: AttributeKind,
+    proof: RangeProof<ArCurve>,
 }
 
 #[derive(
@@ -62,7 +62,7 @@ struct Basket {
 }
 
 struct Server {
-    basket:         Basket,
+    basket: Basket,
     global_context: GlobalContext<ArCurve>,
 }
 
@@ -115,11 +115,15 @@ async fn main() -> anyhow::Result<()> {
     //     .and(handle_pay(client, state));
 
     info!("Booting up HTTP server. Listening on port {}.", app.port);
-    let cors = warp::cors().allow_any_origin();
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_header("Content-Type")
+        .allow_method("POST");
     let server = add_to_basket
         .or(list_items)
         .or(basket_content)
-        .recover(handle_rejection).with(cors);
+        .recover(handle_rejection)
+        .with(cors);
     warp::serve(server).run(([0, 0, 0, 0], app.port)).await;
     Ok(())
 }
@@ -190,7 +194,9 @@ enum PayError {
 }
 
 impl From<RPCError> for AddBasketError {
-    fn from(err: RPCError) -> Self { Self::NodeAccess(err.into()) }
+    fn from(err: RPCError) -> Self {
+        Self::NodeAccess(err.into())
+    }
 }
 
 impl warp::reject::Reject for AddBasketError {}
@@ -201,7 +207,7 @@ impl warp::reject::Reject for PayError {}
 /// Response in case of an error. This is going to be encoded as a JSON body
 /// with fields 'code' and 'message'.
 struct ErrorResponse {
-    code:    u16,
+    code: u16,
     message: String,
 }
 
@@ -209,7 +215,7 @@ struct ErrorResponse {
 fn mk_reply(message: String, code: StatusCode) -> impl warp::Reply {
     let msg = ErrorResponse {
         message: message.into(),
-        code:    code.as_u16(),
+        code: code.as_u16(),
     };
     warp::reply::with_status(warp::reply::json(&msg), code)
 }
@@ -255,7 +261,7 @@ async fn handle_rejection(err: Rejection) -> Result<impl warp::Reply, Infallible
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct AddBasketRequest {
-    item:  Item,
+    item: Item,
     proof: Option<AgeProofOutput>,
 }
 
