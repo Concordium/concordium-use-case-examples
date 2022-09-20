@@ -89,8 +89,19 @@ async fn main() -> anyhow::Result<()> {
         .and(warp::path!("add"))
         .and(handle_add_basket(client, state));
 
+    let list_items = warp::get().and(warp::path!("list")).and_then(|| async {
+        Ok::<_, Rejection>(warp::reply::json(&[
+            Item::Alpha,
+            Item::Beta,
+            Item::Gamma,
+            Item::Xi,
+            Item::Zeta,
+            Item::Omega,
+        ]))
+    });
+
     info!("Booting up HTTP server. Listening on port {}.", app.port);
-    let server = add_to_basket.recover(handle_rejection);
+    let server = add_to_basket.or(list_items).recover(handle_rejection);
     warp::serve(server).run(([0, 0, 0, 0], app.port)).await;
     Ok(())
 }
@@ -138,14 +149,14 @@ impl warp::reject::Reject for AddBasketError {}
 /// with fields 'code' and 'message'.
 struct ErrorResponse {
     code:    u16,
-    message: String
+    message: String,
 }
 
 /// Helper function to make the reply.
 fn mk_reply(message: String, code: StatusCode) -> impl warp::Reply {
     let msg = ErrorResponse {
         message: message.into(),
-        code: code.as_u16(),
+        code:    code.as_u16(),
     };
     warp::reply::with_status(warp::reply::json(&msg), code)
 }
