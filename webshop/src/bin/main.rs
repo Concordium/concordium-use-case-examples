@@ -11,6 +11,7 @@ use concordium_rust_sdk::{
 
 use log::{error, info, warn};
 use std::{
+    collections::BTreeSet,
     convert::Infallible,
     sync::{Arc, Mutex},
 };
@@ -64,7 +65,7 @@ struct Basket {
 struct Server {
     basket:         Basket,
     global_context: GlobalContext<ArCurve>,
-    account:        Option<AccountAddress>,
+    accounts:       BTreeSet<AccountAddress>,
 }
 
 #[tokio::main]
@@ -84,7 +85,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(Mutex::new(Server {
         basket: Basket { basket: Vec::new() },
         global_context,
-        account: None,
+        accounts: BTreeSet::new(),
     }));
     let add_state = state.clone();
     let add_client = client.clone();
@@ -148,7 +149,8 @@ fn handle_pay(
             };
             if let Some((bh, summary)) = status.is_finalized() {
                 if let concordium_rust_sdk::types::BlockItemSummaryDetails::AccountTransaction(at) = &summary.details {
-                    let (amount, receiver) = match &at.effects {
+                    // TODO: Check the receiver is us.
+                    let (amount, _receiver) = match &at.effects {
                         concordium_rust_sdk::types::AccountTransactionEffects::AccountTransfer { amount, to } => {
                             (amount, to)
                         }
@@ -160,8 +162,8 @@ fn handle_pay(
                         }
                     };
                     let mut state = state.lock().expect("Should lock");
-                    if state.basket.basket.len() as u64 == amount.micro_ccd && state.account.map_or(true, |x| &x == receiver) {
-                        state.account = None;
+                    if state.basket.basket.len() as u64 == amount.micro_ccd && (state.accounts.is_empty() || state.accounts.contains(&at.sender)) {
+                        state.accounts.clear();
                         state.basket.basket.clear();
                         info!("Sold in block {}", bh);
                         Ok(warp::reply::reply())
@@ -187,7 +189,7 @@ fn handle_add_basket(
         let state = Arc::clone(&state);
         async move {
             info!("Queried for adding to basket");
-            match validate_worker(client.clone(), state, request).await {
+            match add_basket_worker(client.clone(), state, request).await {
                 Ok(r) => Ok(warp::reply::json(&r)),
                 Err(e) => {
                     warn!("Request is invalid {:#?}.", e);
@@ -301,7 +303,7 @@ struct AddBasketRequest {
 }
 
 /// A common function that validates the cryptographic proofs in the request.
-async fn validate_worker(
+async fn add_basket_worker(
     mut client: concordium_rust_sdk::endpoints::Client,
     state: Arc<Mutex<Server>>,
     request: AddBasketRequest,
@@ -350,6 +352,7 @@ async fn validate_worker(
             Err(AddBasketError::InvalidProofs)
         } else {
             server.basket.basket.push(request.item);
+            server.accounts.insert(proof.account);
             let rv = server.basket.clone();
             Ok(rv)
         }
