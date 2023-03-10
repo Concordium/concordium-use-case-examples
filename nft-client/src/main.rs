@@ -17,14 +17,13 @@ use clap::AppSettings;
 use common::{SerdeDeserialize, SerdeSerialize};
 use concordium_contracts_common::{Deserial, Serial};
 use concordium_rust_sdk::{
-    cis2, common,
-    endpoints::{Client, Endpoint},
-    id, postgres,
+    cis2, common, id, postgres,
     postgres::DatabaseSummaryEntry,
     types::{
         self,
         smart_contracts::{OwnedContractName, OwnedReceiveName},
     },
+    v2::{BlockIdentifier, Client, Endpoint},
 };
 use futures::{StreamExt, TryStreamExt};
 use smart_contracts::concordium_contracts_common::{
@@ -32,6 +31,7 @@ use smart_contracts::concordium_contracts_common::{
 };
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
+    convert::TryFrom,
     path::PathBuf,
 };
 use structopt::*;
@@ -112,15 +112,9 @@ struct App {
         help = "GRPC interface of the node.",
         default_value = "http://localhost:10001"
     )]
-    endpoint:   Endpoint,
-    #[structopt(
-        long = "rpc-auth-token",
-        help = "GRPC authentication token.",
-        default_value = "rpcadmin"
-    )]
-    auth_token: String,
+    endpoint: Endpoint,
     #[structopt(subcommand)]
-    command:    Command,
+    command:  Command,
 }
 
 #[derive(Debug, StructOpt)]
@@ -260,14 +254,10 @@ async fn main() -> anyhow::Result<()> {
     match app.command {
         Command::PrintState { contract } => {
             // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
+            let mut grpc_client = Client::new(app.endpoint)
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
-            let consensus_status = grpc_client
-                .get_consensus_status()
-                .await
-                .context("Failed to get the consensus status")?;
             let contract_context = smart_contracts::ContractContext::new(
                 contract,
                 format!("{}.view", NFT_CONTRACT_NAME)
@@ -275,9 +265,10 @@ async fn main() -> anyhow::Result<()> {
                     .context("Failed to construct receive name")?,
             );
             let invoke_result = grpc_client
-                .invoke_contract(&consensus_status.last_finalized_block, &contract_context)
+                .invoke_instance(&BlockIdentifier::LastFinal, &contract_context)
                 .await
-                .context("Failed to invoke contract")?;
+                .context("Failed to invoke contract")?
+                .response;
             let model = match invoke_result {
                 smart_contracts::InvokeContractResult::Success { return_value, .. } => {
                     if let Some(value) = return_value {
@@ -302,10 +293,11 @@ async fn main() -> anyhow::Result<()> {
             token_id,
             addresses,
         } => {
-            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
+            let grpc_client = Client::new(app.endpoint)
                 .await
                 .context("Failed to connect to Node GRPC")?;
-            let cis2_contract_name = OwnedContractName::new_unchecked("init_CIS2-NFT".to_string());
+            let cis2_contract_name =
+                OwnedContractName::new_unchecked("init_cis2-bridgeable".to_string());
             let mut cis2_contract =
                 cis2::Cis2Contract::new(grpc_client.clone(), contract, cis2_contract_name);
 
@@ -316,10 +308,8 @@ async fn main() -> anyhow::Result<()> {
                     token_id: token_id.clone(),
                 })
                 .collect();
-            let consensus_status = grpc_client.get_consensus_status().await?;
-
             let result = cis2_contract
-                .balance_of(&consensus_status.last_finalized_block, queries.clone())
+                .balance_of(&BlockIdentifier::LastFinal, queries.clone())
                 .await
                 .context("Failed invoking the query")?;
 
@@ -424,7 +414,7 @@ async fn main() -> anyhow::Result<()> {
                 receive_name: format!("{}.mint", NFT_CONTRACT_NAME)
                     .parse()
                     .context("Failed to parse receive name")?,
-                message:      smart_contracts::Parameter::from(bytes),
+                message:      smart_contracts::OwnedParameter::try_from(bytes).unwrap(),
             };
 
             let transaction_payload = transactions::Payload::Update {
@@ -437,7 +427,7 @@ async fn main() -> anyhow::Result<()> {
             eprintln!();
 
             // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
+            let mut grpc_client = Client::new(app.endpoint)
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
@@ -488,7 +478,7 @@ async fn main() -> anyhow::Result<()> {
                 .collect();
 
             // The GRPC client for Concordium node.
-            let mut grpc_client = Client::connect(app.endpoint, app.auth_token)
+            let mut grpc_client = Client::new(app.endpoint)
                 .await
                 .context("Failed to connect to Node GRPC")?;
 
@@ -496,7 +486,7 @@ async fn main() -> anyhow::Result<()> {
             let mut cis2_contract =
                 cis2::Cis2Contract::new(grpc_client.clone(), contract, cis2_contract_name);
             let next_account_nonce = grpc_client
-                .get_next_account_nonce(&account_data.address)
+                .get_next_account_sequence_number(&account_data.address)
                 .await?;
             ensure!(
                 next_account_nonce.all_final,
@@ -594,7 +584,9 @@ async fn send_transaction(
     payload: transactions::Payload,
     energy: transactions::send::GivenEnergy,
 ) -> anyhow::Result<types::hashes::TransactionHash> {
-    let next_account_nonce = client.get_next_account_nonce(&account_data.address).await?;
+    let next_account_nonce = client
+        .get_next_account_sequence_number(&account_data.address)
+        .await?;
     ensure!(
         next_account_nonce.all_final,
         "There are unfinalized transactions. Transaction nonce is not reliable enough."
