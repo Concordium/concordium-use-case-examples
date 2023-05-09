@@ -1,7 +1,8 @@
 use anyhow::Context;
 use clap::AppSettings;
+use concordium_base::common::encryption;
 use concordium_rust_sdk::{
-    common::{encryption, types::CredentialIndex, SerdeDeserialize, SerdeSerialize},
+    common::{types::CredentialIndex, SerdeDeserialize, SerdeSerialize},
     endpoints,
     id::{
         constants::AttributeKind, curve_arithmetic::*, id_prover::*, id_verifier::*,
