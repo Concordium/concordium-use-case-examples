@@ -8,8 +8,6 @@ license-file = "../LICENSE"
 
 [dependencies]
 concordium-rust-sdk = { version = "*", path = "../deps/concordium-rust-sdk/"}
-# Add base directly to enable the encryption feature.
-concordium_base = { version = "*", path = "../deps/concordium-rust-sdk/concordium-base/rust-src/concordium_base/", features = ["encryption"] }
 tokio = { version = "1.5.0", features = ["full"] }
 tonic = "0.4.2"
 anyhow = "1.0"

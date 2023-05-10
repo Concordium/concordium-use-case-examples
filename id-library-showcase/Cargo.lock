@@ -1143,7 +1143,6 @@ dependencies = [
  "anyhow",
  "clap",
  "concordium-rust-sdk",
- "concordium_base",
  "dialoguer",
  "pairing",
  "rand 0.7.3",
