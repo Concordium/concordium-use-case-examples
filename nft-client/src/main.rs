@@ -12,13 +12,17 @@
 //! the concordium-node to have the transaction logging enabled and access to
 //! the PostgreSQL database with transaction logs.
 
-use anyhow::*;
+use anyhow::{bail, ensure, Context};
 use clap::AppSettings;
 use common::{SerdeDeserialize, SerdeSerialize};
-use concordium_contracts_common::{Deserial, Serial};
 use concordium_rust_sdk::{
-    cis2, common, id, postgres,
+    cis2,
+    common,
+    id,
+    postgres,
     postgres::DatabaseSummaryEntry,
+    // Import with `as condordium_std` to make the `Deserial`/`Serial` derive macros work.
+    smart_contracts::common as concordium_std,
     types::{
         self,
         smart_contracts::{OwnedContractName, OwnedReceiveName},
@@ -27,7 +31,7 @@ use concordium_rust_sdk::{
 };
 use futures::{StreamExt, TryStreamExt};
 use smart_contracts::concordium_contracts_common::{
-    self, AccountAddress, Address, Amount, ContractAddress,
+    self, AccountAddress, Address, Amount, ContractAddress, Deserial, Serial,
 };
 use std::{
     collections::{BTreeMap as Map, BTreeSet as Set},
